@@ -22,10 +22,10 @@ items — shared with my wife, not just me.
 - **Calendar organization**: turn extracted items into a calendar view.
 - **Calendar invites**: possibly auto-generate calendar invites/events from
   the extracted items.
-- **Shared state**: my wife and I both see the same data (shared household,
-  not per-user silos).
-- **Auth**: Google sign-in is sufficient — no need for a separate account
-  system.
+- **Shared state**: my wife and I both see the same data — a fixed
+  two-person allowlist, not an open sign-up system.
+- **Auth**: Google sign-in, implemented — requests Gmail read access up
+  front at login, gated to an allowlist of two accounts.
 
 ## Stack (decided)
 
@@ -39,17 +39,17 @@ they firm up.
 
 ## Open questions / not yet decided
 
-- Email source: Gmail API vs. IMAP.
-- How "periodic" pulling would run (background job vs. purely on-open).
+- How "periodic" pulling would run (background job vs. purely on-open) —
+  the inbox view currently only pulls on-demand, when the page loads.
 - How senders are configured (manual allowlist vs. some learned/suggested
   list).
 - Whether calendar integration targets Google Calendar directly or an
   in-app calendar with optional export/sync.
 - How much human review happens between AI extraction and calendar
   creation (auto-create vs. confirm-first).
-- Household/sharing model: fixed two-person allowlist vs. invite-code-based
-  household.
 
 ## Status
 
-Early planning. No implementation yet.
+Email ingestion, using the Gmail API. Google sign-in works end to end
+(gated to an allowlist of two accounts), and a basic inbox view proves the
+Gmail pull itself works — no sender filtering or AI extraction yet.
