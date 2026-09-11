@@ -9,7 +9,23 @@
 <body>
     <main class="splash">
         <h1>Schoolio</h1>
-        <p>The backend is up.</p>
+
+        <#if authError??>
+            <p class="banner-error">Couldn't sign you in - either something went wrong, or that Google
+                account isn't allowed to use this app.</p>
+        </#if>
+
+        <#if currentUser??>
+            <p>Signed in as ${currentUser.email}.</p>
+            <p><a href="/inbox">View inbox</a></p>
+            <form method="post" action="/logout">
+                <button type="submit">Sign out</button>
+            </form>
+        <#else>
+            <p>The backend is up.</p>
+            <p><a href="/auth/google">Sign in with Google</a></p>
+        </#if>
+
         <#if revision??>
             <p class="revision">Cloud Run revision: <code>${revision}</code></p>
         <#else>

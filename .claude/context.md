@@ -40,35 +40,100 @@ Worth checking there for precedent before inventing a new pattern here.
 - **AI**: Gemini API, for extracting structured data (dates, deadlines,
   action items, event details) from filtered school emails — same role
   Gemini plays in `foodie` for recipe/grocery-item parsing.
-- **Auth**: Google sign-in. Likely the same pattern as `foodie`
-  (`installGoogleAuth`/Ktor's built-in OAuth2 provider, signed session
-  cookie) rather than client-side Google Identity Services, for the same
-  reason — simpler if this ends up server-rendered.
-- **Shared state**: the app is used by two people (maintainer + spouse)
-  seeing the same data — closer to `foodie`'s household concept than to
-  per-user-siloed data. Whether it's modeled as a `foodie`-style household
-  (join by invite code, etc.) or just a fixed two-person allowlist isn't
-  decided yet.
+- **Auth**: Google sign-in, implemented. Same pattern as `foodie`
+  (Ktor's built-in OAuth2 provider, signed session cookie via
+  `SessionTransportTransformerMessageAuthentication`) rather than
+  client-side Google Identity Services — simpler for a server-rendered app.
+  Scope requested is `openid email profile
+  https://www.googleapis.com/auth/gmail.readonly` in one shot at login,
+  not a separate "connect Gmail" step later, since Gmail access is the
+  whole point of this app. `extraAuthParameters = access_type=offline,
+  prompt=consent` on every sign-in (not just the first) so Google reliably
+  returns a `refresh_token` to persist — see Gmail integration below.
+- **Shared state / sign-in gating**: **decided — fixed two-person
+  allowlist**, not a `foodie`-style household/invite-code model. Only two
+  Google accounts will ever use this app (maintainer + spouse), so an
+  open-ended join/invite system would be solving a problem that doesn't
+  exist here. `ALLOWED_EMAILS` (comma-separated, case-insensitive env var,
+  same shape as `foodie`'s `ADMIN_EMAILS`) is checked in the
+  `/auth/google/callback` handler *before* creating a user record or
+  session — an unlisted Google account gets redirected back with no
+  session and no Firestore write, not just a gated page. No hardcoded
+  fallback: unset/empty means nobody can sign in.
+  - **Implication for `User`**: no opaque UUID id decoupled from the
+    provider the way `foodie`'s `User.id` is (that existed there to let a
+    second sign-in method resolve to the same account). Schoolio has
+    exactly one sign-in method, so `User.id == googleSub` directly — see
+    `UserStore.kt`.
+- **Gmail integration**: plain REST calls against `gmail.googleapis.com`
+  (`GmailClient`/`RestGmailClient` in `GmailClient.kt`), not the
+  `google-api-services-gmail` client library — consistent with the
+  no-framework call above and with how `foodie`'s own Google/Firebase
+  calls (`GoogleAuthFlow.kt`, `EmailAuthFlow.kt`) go through a plain
+  injected `HttpClient` rather than a provider SDK, which is also what
+  makes it fake-able with `MockEngine` in tests. Each user's Google
+  `refresh_token` is stored on their Firestore `User` doc
+  (`googleRefreshToken`) and exchanged for a short-lived access token on
+  every Gmail call (`RestGmailClient.refreshAccessToken`) rather than
+  cached — pulls are infrequent (on app open, or periodically — still an
+  open question below), so there's no hot path worth caching a ~1-hour
+  token for yet.
+  - `GET /inbox` (`InboxRoutes.kt`) is the current proof-of-pull: lists the
+    signed-in user's most recent messages (subject/from/date, via
+    `format=metadata` so full bodies aren't downloaded just to list
+    headers) with **no sender filtering yet** — that's still open, see
+    below. Prompts to "sign in again" if no refresh token is stored yet
+    (shouldn't normally happen given `prompt=consent` above, but the route
+    handles it rather than crashing).
 
 ## Not yet decided / open questions
 
-- Email source: Gmail API vs. IMAP.
-- How periodic email pulling runs (background job vs. purely on-open).
+- How periodic email pulling runs (background job vs. purely on-open) —
+  `GET /inbox` currently only pulls on-demand, when the page is loaded.
 - How school senders are configured (manual allowlist vs. suggested list).
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
   (auto-create vs. confirm-first).
-- Household/sharing model: fixed two-person allowlist vs. `foodie`-style
-  household with invite codes.
 
 ## Configuration reference
 
 - **Backend**: `backend/` — Kotlin/Ktor, FreeMarker templates
   (`backend/src/main/resources/templates/*.ftl`), static assets under
-  `backend/src/main/resources/static/`, same layout as `foodie`. Currently
-  just `GET /` (`splash.ftl`) — confirms the deploy pipeline works and
-  shows the Cloud Run revision (`K_REVISION` env var) it's running as.
+  `backend/src/main/resources/static/`, same layout as `foodie`. Routes so
+  far: `GET /` (`splash.ftl` — deploy-confirmation revision display, plus
+  sign-in/sign-out), `GET /auth/google` + `GET /auth/google/callback` +
+  `POST /logout` (`Auth.kt`), `GET /inbox` (`InboxRoutes.kt`, gated behind
+  `authenticate(USER_SESSION_PROVIDER_NAME)`).
+- **Env vars** (Cloud Run + local `.env`/shell, not committed): 
+  `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (a *new* OAuth 2.0 Client ID
+  under the shared `foodie-503510` project — not foodie's own client, since
+  each app needs its own redirect URIs), `SESSION_SECRET` (HMAC key for
+  cookie signing — falls back to a hardcoded insecure dev value if unset,
+  fine locally but must be set on Cloud Run), `OAUTH_REDIRECT_BASE_URL`
+  (externally-visible base URL for the OAuth callback — defaults to
+  `http://localhost:8080` locally), `ALLOWED_EMAILS` (comma-separated,
+  gates sign-in itself — see the Shared state/sign-in gating decision
+  above), `FIRESTORE_DATABASE_ID` (defaults to `"schoolio"` if unset — see
+  below).
+- **Firestore database**: not created yet. Must be a *new* database under
+  the shared `foodie-503510` project, distinct from `foodie`'s
+  `foodie-nne1` — planned id `schoolio` (or `schoolio-nne1` to mirror
+  `foodie`'s region-suffixed naming, not decided), region
+  `northamerica-northeast1` to match Cloud Run/co-locate with `foodie`'s
+  database. Firestore databases aren't created implicitly by the app the
+  way a Firestore *collection* is — this needs a one-time manual step
+  (console or `gcloud firestore databases create`) before `FirestoreUserStore`
+  will actually work.
+- **Local dev needs Google Cloud Application Default Credentials** for the
+  real `FirestoreUserStore` — running the app locally (`./gradlew run`)
+  without `gcloud auth application-default login` (or a service account
+  key via `GOOGLE_APPLICATION_CREDENTIALS`) crashes at startup with an NPE
+  deep inside `google-cloud-firestore` (`DatabaseRootName` builder hitting
+  a null project id) rather than a clear error - see CLAUDE.md's gotchas
+  section. Automated tests never hit this: `testModule()` always injects
+  `FakeUserRepository`/`FakeGmailClient`, so the real Firestore/Google
+  clients are never constructed in CI.
 - **Deploy**: `cloudbuild.yaml` at repo root + `backend/Dockerfile`
   (multi-stage: `eclipse-temurin:21-jdk-jammy` builds the fat jar via
   `./gradlew buildFatJar`, `eclipse-temurin:21-jre-jammy` runs it), same
