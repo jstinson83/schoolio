@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+**/build/
+!src/**/build/
+
+# IntelliJ IDEA / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Kotlin / Java
+*.class
+*.kotlin_module
+*.log
+
+# Mac
+.DS_Store
+
+# Temp files
+.gradle-temp/

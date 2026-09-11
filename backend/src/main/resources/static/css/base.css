@@ -1,0 +1,29 @@
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #f7f7f5;
+    color: #222;
+}
+
+.splash {
+    max-width: 32rem;
+    margin: 4rem auto;
+    padding: 0 1.5rem;
+    text-align: center;
+}
+
+.splash h1 {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+}
+
+.splash .revision {
+    color: #666;
+    font-size: 0.875rem;
+}
+
+.splash .revision code {
+    background: #eee;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+}
