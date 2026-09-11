@@ -31,8 +31,8 @@ items — shared with my wife, not just me.
 
 - **Backend**: Kotlin + Ktor.
 - **Storage**: Firestore.
-- **No framework layered on top of Ktor** — the app is small enough not to
-  need one.
+- **No framework, backend or frontend** — plain Ktor (no Spring/Micronaut),
+  server-rendered HTML via template files (no React/Vue/etc.), plain JS/CSS.
 
 See `.claude/context.md` for the reasoning and for architecture details as
 they firm up.
@@ -43,7 +43,6 @@ they firm up.
 - How "periodic" pulling would run (background job vs. purely on-open).
 - How senders are configured (manual allowlist vs. some learned/suggested
   list).
-- Server-rendered UI vs. a JSON API behind a separate frontend.
 - Whether calendar integration targets Google Calendar directly or an
   in-app calendar with optional export/sync.
 - How much human review happens between AI extraction and calendar
