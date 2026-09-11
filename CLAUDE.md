@@ -39,10 +39,11 @@ and `.claude/context.md` for architecture decisions made so far.
 - After pushing commits to a feature branch, open a PR against `main` if
   the maintainer hasn't already asked for one to exist — same convention as
   `foodie`. The maintainer merges from the PR link.
-- Feature branches get reused across tasks. If the branch's previous PR has
-  already merged, rebuild it from `origin/main` before adding new commits
-  (`git checkout -B <branch> origin/main`), rather than stacking on
-  stale/merged history.
+- Feature branches get reused across tasks. Before adding new commits after
+  maintainer feedback, actually check (don't assume) whether the branch's
+  previous PR has merged — expect it usually has. If so, rebuild the branch
+  from `origin/main` first (`git checkout -B <branch> origin/main`) rather
+  than stacking on stale/merged history, then open a new PR after pushing.
 - Commit authorship/attribution follows whatever this Claude Code session's
   own instructions specify (it can vary by environment) — don't hardcode a
   specific author line here.
