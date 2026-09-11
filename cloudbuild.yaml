@@ -22,8 +22,6 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 substitutions:
-  # $PROJECT_ID is a Cloud Build built-in - no need to hardcode it here.
-  _IMAGE: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${SHORT_SHA}'
+  _IMAGE: 'northamerica-northeast1-docker.pkg.dev/foodie-503510/cloud-run-source-deploy/schoolio:${SHORT_SHA}'
   _SERVICE_NAME: 'schoolio'
   _REGION: 'northamerica-northeast1'
-  _AR_REPO: 'cloud-run-source-deploy'

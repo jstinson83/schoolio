@@ -72,15 +72,31 @@ Worth checking there for precedent before inventing a new pattern here.
 - **Deploy**: `cloudbuild.yaml` at repo root + `backend/Dockerfile`
   (multi-stage: `eclipse-temurin:21-jdk-jammy` builds the fat jar via
   `./gradlew buildFatJar`, `eclipse-temurin:21-jre-jammy` runs it), same
-  shape as `foodie`. Planned Cloud Run service name `schoolio`, region
-  `northamerica-northeast1` (matches `foodie`'s region — same
-  Montreal-based maintainer, same reasoning for keeping client↔server
-  latency down). `cloudbuild.yaml` builds the image tag from Cloud Build's
-  built-in `$PROJECT_ID` substitution rather than hardcoding a GCP project
-  id, so it doesn't need editing once the actual project is created — only
-  the Cloud Build trigger needs to point at it. GCP project id and
-  Firestore database id/region: not created yet, record here once they
-  exist — see `foodie`'s `context.md` for the reference shape to follow.
+  shape as `foodie`. Cloud Run service name `schoolio`, region
+  `northamerica-northeast1` (matches `foodie`'s region).
+- **GCP project: shared with `foodie`** — `foodie-503510`, hardcoded into
+  `cloudbuild.yaml`'s `_IMAGE` substitution
+  (`northamerica-northeast1-docker.pkg.dev/foodie-503510/cloud-run-source-deploy/schoolio:${SHORT_SHA}`),
+  same as `foodie`'s own `cloudbuild.yaml`. Deliberate choice — one GCP
+  project/billing account for both small apps rather than standing up a
+  second one. Cloud Build's built-in `$PROJECT_ID` substitution was tried
+  first (so the file wouldn't need a real value baked in) but the build
+  failed without a hardcoded project id, so this follows `foodie`'s
+  pattern instead — worth investigating properly if it comes up again, but
+  not blocking right now.
+  - **Implication**: schoolio's image lands in the *same* Artifact
+    Registry repo `foodie` already uses (`cloud-run-source-deploy` in
+    `northamerica-northeast1`), just under a different image name
+    (`schoolio` vs. `foodie-backend`) — no new AR repo needs creating.
+  - **Implication**: once Firestore is set up, schoolio's database id must
+    be distinct from `foodie`'s (`foodie-nne1`) — same project means same
+    Firestore instance's list of databases, so a name collision is a real
+    risk, not just a style concern.
+  - **Implication**: IAM roles granted to the Cloud Build trigger's
+    service account for `foodie` (`artifactregistry.writer`,
+    `run.developer`, `iam.serviceAccountUser`) may already cover schoolio
+    too, if it's the same service account — worth checking before
+    re-granting anything.
 
 ## Decisions log
 
