@@ -1,0 +1,29 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_IMAGE}', '-f', 'backend/Dockerfile', 'backend']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_IMAGE}']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - '${_SERVICE_NAME}'
+      - '--image=${_IMAGE}'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+
+images:
+  - '${_IMAGE}'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  # $PROJECT_ID is a Cloud Build built-in - no need to hardcode it here.
+  _IMAGE: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${SHORT_SHA}'
+  _SERVICE_NAME: 'schoolio'
+  _REGION: 'northamerica-northeast1'
+  _AR_REPO: 'cloud-run-source-deploy'

@@ -64,10 +64,23 @@ Worth checking there for precedent before inventing a new pattern here.
 
 ## Configuration reference
 
-Nothing deployed yet. Once infra exists, record concrete IDs/regions/config
-here (GCP project id, Firestore database id + region, Cloud Run service
-name, env var names for secrets) rather than in `CLAUDE.md` — see
-`foodie`'s `context.md` for the reference shape to follow.
+- **Backend**: `backend/` — Kotlin/Ktor, FreeMarker templates
+  (`backend/src/main/resources/templates/*.ftl`), static assets under
+  `backend/src/main/resources/static/`, same layout as `foodie`. Currently
+  just `GET /` (`splash.ftl`) — confirms the deploy pipeline works and
+  shows the Cloud Run revision (`K_REVISION` env var) it's running as.
+- **Deploy**: `cloudbuild.yaml` at repo root + `backend/Dockerfile`
+  (multi-stage: `eclipse-temurin:21-jdk-jammy` builds the fat jar via
+  `./gradlew buildFatJar`, `eclipse-temurin:21-jre-jammy` runs it), same
+  shape as `foodie`. Planned Cloud Run service name `schoolio`, region
+  `northamerica-northeast1` (matches `foodie`'s region — same
+  Montreal-based maintainer, same reasoning for keeping client↔server
+  latency down). `cloudbuild.yaml` builds the image tag from Cloud Build's
+  built-in `$PROJECT_ID` substitution rather than hardcoding a GCP project
+  id, so it doesn't need editing once the actual project is created — only
+  the Cloud Build trigger needs to point at it. GCP project id and
+  Firestore database id/region: not created yet, record here once they
+  exist — see `foodie`'s `context.md` for the reference shape to follow.
 
 ## Decisions log
 
