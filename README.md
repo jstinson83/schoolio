@@ -27,17 +27,29 @@ items — shared with my wife, not just me.
 - **Auth**: Google sign-in is sufficient — no need for a separate account
   system.
 
+## Stack (decided)
+
+- **Backend**: Kotlin + Ktor.
+- **Storage**: Firestore.
+- **No framework layered on top of Ktor** — the app is small enough not to
+  need one.
+
+See `.claude/context.md` for the reasoning and for architecture details as
+they firm up.
+
 ## Open questions / not yet decided
 
 - Email source: Gmail API vs. IMAP.
 - How "periodic" pulling would run (background job vs. purely on-open).
 - How senders are configured (manual allowlist vs. some learned/suggested
   list).
-- Data store for extracted items and shared household state.
+- Server-rendered UI vs. a JSON API behind a separate frontend.
 - Whether calendar integration targets Google Calendar directly or an
   in-app calendar with optional export/sync.
 - How much human review happens between AI extraction and calendar
   creation (auto-create vs. confirm-first).
+- Household/sharing model: fixed two-person allowlist vs. invite-code-based
+  household.
 
 ## Status
 
