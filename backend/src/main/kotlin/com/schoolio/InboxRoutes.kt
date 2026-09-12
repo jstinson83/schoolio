@@ -12,6 +12,9 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 // How long to wait after a Gmail pull before running Gemini over whatever's
 // PENDING - long enough that a settings save (which redirects straight back
@@ -82,21 +85,14 @@ fun Route.inboxRoutes(
         val user = userStore.find(userId)
         val appPassword = user?.gmailAppPassword
         val settings = settingsStore.get()
-        // Included on every branch below so the settings/app-password forms
-        // always show the current values, whether or not a scan actually ran
-        // this request.
-        val settingsModel = mapOf(
-            "sendersText" to settings.schoolSenders.joinToString(", "),
-            "lookbackWeeks" to settings.lookbackWeeks,
-            "hasAppPassword" to (appPassword != null)
-        )
+        val navModel = mapOf("activeNav" to "inbox")
 
         if (appPassword == null) {
-            call.respond(FreeMarkerContent("inbox.ftl", mapOf("needsGmailAccess" to true) + settingsModel + call.currentUserModel()))
+            call.respond(FreeMarkerContent("inbox.ftl", mapOf("needsGmailAccess" to true) + navModel + call.currentUserModel()))
             return@get
         }
         if (settings.schoolSenders.isEmpty()) {
-            call.respond(FreeMarkerContent("inbox.ftl", mapOf("noSendersConfigured" to true) + settingsModel + call.currentUserModel()))
+            call.respond(FreeMarkerContent("inbox.ftl", mapOf("noSendersConfigured" to true) + navModel + call.currentUserModel()))
             return@get
         }
 
@@ -104,13 +100,41 @@ fun Route.inboxRoutes(
         scheduleProcessing()
 
         val messages = messageStore.getAll()
-        val actionItemsByMessage = actionItemStore.getAll().groupBy { it.sourceMessageId }
-        val items = messages.map { message -> messagePageModel(message, actionItemsByMessage[message.id] ?: emptyList()) }
-        val pendingCount = messages.count { it.status == MessageStatus.PENDING }
+        val messagesById = messages.associateBy { it.id }
+        val allActionItems = actionItemStore.getAll()
+        val actionItemsByMessage = allActionItems.groupBy { it.sourceMessageId }
+        val processedWithNoActionItems = messages.filter {
+            it.status == MessageStatus.PROCESSED && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
+        }
+        val failedMessages = messages.filter { it.status == MessageStatus.FAILED }
+        val pendingMessages = messages.filter { it.status == MessageStatus.PENDING }
         call.respond(
             FreeMarkerContent(
                 "inbox.ftl",
-                mapOf("items" to items, "pendingCount" to pendingCount) + settingsModel + call.currentUserModel()
+                mapOf(
+                    "dateGroups" to buildDateGroups(allActionItems, messagesById),
+                    "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
+                    "noActionMessages" to processedWithNoActionItems.map { mapOf("subject" to it.subject, "summary" to it.summary) },
+                    "failedMessages" to failedMessages.map { mapOf("subject" to it.subject, "reason" to it.failureReason) },
+                    "pendingCount" to pendingMessages.size
+                ) + navModel + call.currentUserModel()
+            )
+        )
+    }
+
+    get("/inbox/settings") {
+        val userId = call.requireUserId()
+        val user = userStore.find(userId)
+        val settings = settingsStore.get()
+        call.respond(
+            FreeMarkerContent(
+                "settings.ftl",
+                mapOf(
+                    "sendersText" to settings.schoolSenders.joinToString(", "),
+                    "lookbackWeeks" to settings.lookbackWeeks,
+                    "hasAppPassword" to (user?.gmailAppPassword != null),
+                    "activeNav" to "settings"
+                ) + call.currentUserModel()
             )
         )
     }
@@ -210,13 +234,55 @@ private suspend fun pullAndStoreNewMessages(
     }
 }
 
-private fun messagePageModel(message: EmailMessage, actionItems: List<ActionItem>): Map<String, Any?> = mapOf(
-    "id" to message.id,
-    "subject" to message.subject,
-    "from" to message.from,
-    "date" to message.date,
-    "status" to message.status.name,
-    "summary" to message.summary,
-    "failureReason" to message.failureReason,
-    "actionItems" to actionItems.map { mapOf("title" to it.title, "description" to it.description, "date" to it.date) }
-)
+private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
+
+// ActionItem.date is already YYYY-MM-DD (optionally with a 'T'HH:MM suffix -
+// see ActionItemStore.kt's doc comment), so the first 10 characters are
+// always the grouping key when it's set. When it's null (the email stated no
+// date), the main page still needs somewhere to put the item - the email's
+// own sent date (message.receivedAt, not the unparsed display string in
+// EmailMessage.date) is the next-best thing, per the maintainer's ask.
+// Fixed at UTC rather than the server's local zone so the grouping key is
+// deterministic regardless of where this happens to run.
+private fun ActionItem.dateKeyAndTime(message: EmailMessage?): Pair<String, String?> {
+    val raw = date
+    if (raw != null && raw.length >= 10) {
+        return raw.take(10) to raw.drop(10).removePrefix("T").ifEmpty { null }
+    }
+    val fallbackKey = message?.receivedAt?.atZone(ZoneOffset.UTC)?.toLocalDate()?.toString() ?: "unknown-date"
+    return fallbackKey to null
+}
+
+private fun formatGroupHeading(dateKey: String): String =
+    runCatching { LocalDate.parse(dateKey).format(groupHeadingFormatter) }.getOrDefault(dateKey)
+
+// Every action item across every message, grouped by the date computed
+// above and sorted chronologically - the main page's primary content (see
+// CLAUDE.md/this task's nav rework). messagesById supplies each item's
+// source message for display context (subject/from/summary) and the
+// sent-date fallback.
+private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> {
+    data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
+
+    val dated = actionItems.map { item ->
+        val message = messagesById[item.sourceMessageId]
+        val (dateKey, time) = item.dateKeyAndTime(message)
+        Dated(dateKey, time, item, message)
+    }
+    return dated.groupBy { it.dateKey }.entries.sortedBy { it.key }.map { (dateKey, entries) ->
+        mapOf(
+            "displayDate" to formatGroupHeading(dateKey),
+            "items" to entries.map { dated ->
+                mapOf(
+                    "title" to dated.item.title,
+                    "description" to dated.item.description,
+                    "date" to dated.item.date,
+                    "time" to dated.time,
+                    "subject" to (dated.message?.subject ?: ""),
+                    "from" to (dated.message?.from ?: ""),
+                    "summary" to (dated.message?.summary ?: "")
+                )
+            }
+        )
+    }
+}

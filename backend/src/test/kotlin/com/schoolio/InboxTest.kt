@@ -55,8 +55,9 @@ class InboxTest {
         assertTrue(body.contains("Permission slip needs a signature."))
         assertTrue(body.contains("Sign permission slip"))
         assertTrue(body.contains("2026-09-04"))
-        // The settings form should be pre-filled with the current values.
-        assertTrue(body.contains(TEST_SENDER))
+        // The settings page (not the main inbox page anymore) should be
+        // pre-filled with the current values.
+        assertTrue(client.get("/inbox/settings").bodyAsText().contains(TEST_SENDER))
         assertEquals(TEST_EMAIL, gmailClient.lastEmailUsed)
         assertEquals("fake-app-password", gmailClient.lastAppPasswordUsed)
         assertEquals(listOf(TEST_SENDER), gmailClient.lastSendersUsed)
@@ -263,5 +264,23 @@ class InboxTest {
         )
 
         assertEquals(52, settingsStore.current.lookbackWeeks)
+    }
+
+    // Settings (Gmail app password + school senders) now live on their own
+    // page, off the main inbox view - see InboxRoutes.kt's GET /inbox/settings.
+    @Test
+    fun testSettingsPageShowsCurrentConfigurationAndAppPasswordState() = testApplication {
+        val userStore = FakeUserRepository()
+        val settingsStore = FakeSettingsRepository(ScanSettings(listOf(TEST_SENDER), 6))
+        testModule(userStore = userStore, settingsStore = settingsStore)
+        val client = signInFakeUser()
+
+        val disconnectedBody = client.get("/inbox/settings").bodyAsText()
+        assertTrue(disconnectedBody.contains(TEST_SENDER))
+        assertFalse(disconnectedBody.contains("already connected"))
+
+        userStore.saveGmailAppPassword(TEST_SUB, "some-app-password")
+        val connectedBody = client.get("/inbox/settings").bodyAsText()
+        assertTrue(connectedBody.contains("already connected"))
     }
 }
