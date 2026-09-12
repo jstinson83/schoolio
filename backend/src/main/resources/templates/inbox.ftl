@@ -28,7 +28,7 @@
                 <input type="text" name="senders" value="${sendersText}" placeholder="teacher@school.example, pta@school.example">
             </label>
             <label>
-                Lookback weeks
+                First-time lookback (weeks)
                 <input type="number" name="lookbackWeeks" min="1" max="52" value="${lookbackWeeks?c}">
             </label>
             <button type="submit">Save &amp; rescan</button>
@@ -39,36 +39,51 @@
         <#elseif noSendersConfigured??>
             <p>No school senders are configured yet - add at least one above.</p>
         <#elseif items??>
-            <p class="inbox-scope">Scanning the last ${lookbackWeeks} week<#if lookbackWeeks != 1>s</#if>
-                of email from configured senders.</p>
+            <p class="inbox-scope">Scanning for new email from configured senders since the last scan
+                (or the last ${lookbackWeeks} week<#if lookbackWeeks != 1>s</#if> for a sender scanned for the first time).</p>
+            <#if pendingCount gt 0>
+                <div id="processingBanner" class="banner banner-processing">
+                    <span class="processing-banner-text">Processing <#if pendingCount == 1>1 message<#else>${pendingCount} messages</#if>&hellip;</span>
+                </div>
+            </#if>
             <#if items?size == 0>
                 <p>No messages found.</p>
             <#else>
-                <ul class="message-list">
+                <ul class="message-list" id="messageList">
                     <#list items as item>
-                        <li class="message">
+                        <li class="message" data-id="${item.id}" data-status="${item.status}">
                             <div class="message-subject">${item.subject}</div>
                             <div class="message-meta">${item.from} &middot; ${item.date}</div>
-                            <#if item.summary?has_content>
-                                <p class="message-summary">${item.summary}</p>
-                            </#if>
-                            <#if item.actionItems?size gt 0>
-                                <ul class="action-items">
-                                    <#list item.actionItems as action>
-                                        <li>
-                                            ${action.description}
-                                            <#if action.dueDate?? || action.dueTime??>
-                                                <span class="action-due">(<#if action.dueDate??>${action.dueDate}</#if><#if action.dueTime??> ${action.dueTime}</#if>)</span>
-                                            </#if>
-                                        </li>
-                                    </#list>
-                                </ul>
-                            </#if>
+                            <div class="message-body">
+                                <#if item.status == "PENDING">
+                                    <p class="message-pending">Processing&hellip;</p>
+                                <#elseif item.status == "FAILED">
+                                    <p class="message-failed">Couldn't process this message<#if item.failureReason?has_content>: ${item.failureReason}</#if></p>
+                                <#else>
+                                    <#if item.summary?has_content>
+                                        <p class="message-summary">${item.summary}</p>
+                                    </#if>
+                                    <#if item.actionItems?size gt 0>
+                                        <ul class="action-items">
+                                            <#list item.actionItems as action>
+                                                <li>
+                                                    <span class="action-title">${action.title}</span>
+                                                    <#if action.description?has_content> &mdash; ${action.description}</#if>
+                                                    <#if action.date?has_content>
+                                                        <span class="action-due">(${action.date})</span>
+                                                    </#if>
+                                                </li>
+                                            </#list>
+                                        </ul>
+                                    </#if>
+                                </#if>
+                            </div>
                         </li>
                     </#list>
                 </ul>
             </#if>
         </#if>
     </main>
+    <script src="/app.js"></script>
 </body>
 </html>

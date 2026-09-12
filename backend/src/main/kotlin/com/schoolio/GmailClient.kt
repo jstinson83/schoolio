@@ -14,7 +14,6 @@ import jakarta.mail.search.ReceivedDateTerm
 import jakarta.mail.search.SearchTerm
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.time.Duration
 import java.time.Instant
 import java.util.Date
 import java.util.Properties
@@ -23,17 +22,26 @@ import java.util.Properties
 // jakarta.mail Message, same "shape of what we use" reasoning as
 // GoogleUserInfo in GoogleAuthFlow.kt. bodyText is the plain-text email body
 // (falling back to a crude HTML-stripped version if no text/plain part is
-// found) - GeminiClient needs the actual content, not just headers.
-data class GmailMessage(val id: String, val subject: String, val from: String, val date: String, val bodyText: String)
+// found) - GeminiClient needs the actual content, not just headers. date is
+// the display string (as before); receivedAt is the same moment as a
+// comparable Instant, used for sorting stored messages and advancing
+// ScanState's per-sender watermark (see ScanStateStore.kt) - a formatted
+// string isn't safely comparable/sortable across the differing date formats
+// real email clients send.
+data class GmailMessage(val id: String, val subject: String, val from: String, val date: String, val receivedAt: Instant, val bodyText: String)
 
 interface GmailClient {
     // email/appPassword are per-user (User.email/User.gmailAppPassword) - the
     // caller is responsible for having one (i.e. having entered an app
     // password via the /inbox connect-Gmail form); this interface doesn't
-    // touch UserRepository itself. senders/sinceWeeks scope the IMAP SEARCH
-    // server-side (never pulling the whole mailbox locally to filter) - see
-    // README's "I don't want to pull all my email" framing.
-    suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage>
+    // touch UserRepository itself. senders scopes the IMAP SEARCH server-side
+    // (never pulling the whole mailbox locally to filter) - see README's "I
+    // don't want to pull all my email" framing. since is an absolute point in
+    // time rather than a rolling "weeks back" window - the caller (InboxRoutes)
+    // resolves it from ScanState's per-sender watermark, falling back to
+    // ScanSettings.lookbackWeeks only when no watermark exists yet (first-time
+    // scan) - see ScanStateStore.kt.
+    suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, since: Instant): List<GmailMessage>
 }
 
 // Comma-separated list of sender addresses/domains to scan for - IMAP's FROM
@@ -63,7 +71,7 @@ class ImapGmailClient(
     // coroutine-friendly - withContext(Dispatchers.IO) keeps it off whatever
     // thread called this suspend fun, same reasoning Ktor's own docs give for
     // wrapping blocking JDBC/file calls.
-    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> =
+    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, since: Instant): List<GmailMessage> =
         withContext(Dispatchers.IO) {
             val session = Session.getInstance(Properties().apply { put("mail.store.protocol", protocol) })
             val store = session.getStore(protocol)
@@ -72,7 +80,7 @@ class ImapGmailClient(
                 val folder = store.getFolder("INBOX")
                 folder.open(Folder.READ_ONLY)
                 try {
-                    folder.search(buildSearchTerm(senders, sinceWeeks)).map { it.toGmailMessage() }
+                    folder.search(buildSearchTerm(senders, since)).map { it.toGmailMessage() }
                 } finally {
                     folder.close(false)
                 }
@@ -81,23 +89,26 @@ class ImapGmailClient(
             }
         }
 
-    private fun buildSearchTerm(senders: List<String>, sinceWeeks: Int): SearchTerm {
-        val since = Date.from(Instant.now().minus(Duration.ofDays(sinceWeeks * 7L)))
+    private fun buildSearchTerm(senders: List<String>, since: Instant): SearchTerm {
         val senderTerm = OrTerm(senders.map { FromStringTerm(it) }.toTypedArray())
-        return AndTerm(senderTerm, ReceivedDateTerm(ComparisonTerm.GE, since))
+        return AndTerm(senderTerm, ReceivedDateTerm(ComparisonTerm.GE, Date.from(since)))
     }
 
-    private fun Message.toGmailMessage(): GmailMessage = GmailMessage(
-        // Message-ID header when available (stable across sessions) -
-        // messageNumber alone can be reassigned between IMAP sessions, so
-        // it's only a last-resort fallback for a message that somehow lacks
-        // one.
-        id = (this as? MimeMessage)?.messageID ?: "msg-$messageNumber",
-        subject = subject ?: "(no subject)",
-        from = from?.firstOrNull()?.toString() ?: "(unknown sender)",
-        date = (sentDate ?: receivedDate)?.toString() ?: "",
-        bodyText = extractPlainText(this).ifBlank { extractFirstHtmlAsText(this) }
-    )
+    private fun Message.toGmailMessage(): GmailMessage {
+        val at = (sentDate ?: receivedDate)?.toInstant() ?: Instant.now()
+        return GmailMessage(
+            // Message-ID header when available (stable across sessions) -
+            // messageNumber alone can be reassigned between IMAP sessions, so
+            // it's only a last-resort fallback for a message that somehow lacks
+            // one.
+            id = (this as? MimeMessage)?.messageID ?: "msg-$messageNumber",
+            subject = subject ?: "(no subject)",
+            from = from?.firstOrNull()?.toString() ?: "(unknown sender)",
+            date = (sentDate ?: receivedDate)?.toString() ?: "",
+            receivedAt = at,
+            bodyText = extractPlainText(this).ifBlank { extractFirstHtmlAsText(this) }
+        )
+    }
 
     private fun extractPlainText(part: Part): String {
         if (part.isMimeType("text/plain")) return (part.content as? String) ?: ""

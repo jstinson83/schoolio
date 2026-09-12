@@ -5,6 +5,7 @@ import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import java.time.Instant
 import kotlin.test.*
 
 class InboxTest {
@@ -17,6 +18,7 @@ class InboxTest {
                     subject = "Field trip permission slip",
                     from = "Ms. Rivera <teacher@school.example>",
                     date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                    receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
                     bodyText = "Please sign and return by Friday."
                 )
             )
@@ -24,29 +26,129 @@ class InboxTest {
         val geminiClient = FakeGeminiClient(
             EmailExtraction(
                 summary = "Permission slip needs a signature.",
-                actionItems = listOf(ActionItem("Sign and return the form", dueDate = "2026-09-04"))
+                actionItems = listOf(
+                    ExtractedActionItem(title = "Sign permission slip", description = "Sign and return the form", dueDate = "2026-09-04")
+                )
             )
         )
         val userStore = FakeUserRepository()
         val settingsStore = FakeSettingsRepository(ScanSettings(listOf(TEST_SENDER), 3))
-        testModule(userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient, settingsStore = settingsStore)
+        val messageStore = FakeMessageRepository()
+        testModule(
+            userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient,
+            settingsStore = settingsStore, messageStore = messageStore
+        )
         val client = signInFakeUserWithGmailConnected(userStore, appPassword = "fake-app-password")
 
-        val response = client.get("/inbox")
-        assertEquals(HttpStatusCode.OK, response.status)
-        val body = response.bodyAsText()
+        // GET /inbox pulls and stores the raw message immediately but doesn't
+        // wait on Gemini - it should render as still-pending before the
+        // debounced processing pass has had a chance to run.
+        val pendingBody = client.get("/inbox").bodyAsText()
+        assertTrue(pendingBody.contains("Field trip permission slip"))
+        assertTrue(pendingBody.contains("Processing"))
+
+        awaitMessagesProcessed(messageStore)
+
+        val body = client.get("/inbox").bodyAsText()
         assertTrue(body.contains("Field trip permission slip"))
         assertTrue(body.contains("teacher@school.example"))
         assertTrue(body.contains("Permission slip needs a signature."))
-        assertTrue(body.contains("Sign and return the form"))
+        assertTrue(body.contains("Sign permission slip"))
         assertTrue(body.contains("2026-09-04"))
         // The settings form should be pre-filled with the current values.
         assertTrue(body.contains(TEST_SENDER))
         assertEquals(TEST_EMAIL, gmailClient.lastEmailUsed)
         assertEquals("fake-app-password", gmailClient.lastAppPasswordUsed)
         assertEquals(listOf(TEST_SENDER), gmailClient.lastSendersUsed)
-        assertEquals(3, gmailClient.lastSinceWeeksUsed)
         assertEquals(listOf("Field trip permission slip"), geminiClient.extractedSubjects)
+    }
+
+    // Once a message is PROCESSED, re-pulling it (e.g. because another
+    // sender's watermark hasn't advanced as far, see pullAndStoreNewMessages'
+    // doc comment) must not run it through Gemini a second time.
+    @Test
+    fun testAlreadyProcessedMessageIsNotReExtractedOnANewPull() = testApplication {
+        val gmailClient = FakeGmailClient(
+            listOf(
+                GmailMessage(
+                    id = "1", subject = "Newsletter", from = TEST_SENDER,
+                    date = "Mon, 1 Sep 2026 10:00:00 -0400", receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                    bodyText = "Nothing to act on."
+                )
+            )
+        )
+        val geminiClient = FakeGeminiClient(EmailExtraction(summary = "Nothing to act on.", actionItems = emptyList()))
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        testModule(userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient, messageStore = messageStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        awaitMessagesProcessed(messageStore)
+        assertEquals(1, geminiClient.extractedSubjects.size)
+
+        client.get("/inbox")
+        awaitMessagesProcessed(messageStore)
+        assertEquals(1, geminiClient.extractedSubjects.size, "Re-pulling an already-processed message shouldn't re-run Gemini on it")
+    }
+
+    // A message Gemini fails on stays visible with a reason instead of
+    // silently vanishing - see InboxProcessingSweep.kt's markFailed comment.
+    @Test
+    fun testFailedExtractionShowsErrorInsteadOfLosingTheMessage() = testApplication {
+        val gmailClient = FakeGmailClient(
+            listOf(
+                GmailMessage(
+                    id = "1", subject = "Field trip form", from = TEST_SENDER,
+                    date = "Mon, 1 Sep 2026 10:00:00 -0400", receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                    bodyText = "Please sign."
+                )
+            )
+        )
+        val geminiClient = object : GeminiClient {
+            override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction =
+                error("Gemini is down")
+        }
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        testModule(userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient, messageStore = messageStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        awaitMessageStatus(messageStore, "1", MessageStatus.FAILED)
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("Field trip form"))
+        assertTrue(body.contains("Couldn't process this message"))
+        assertTrue(body.contains("Gemini is down"))
+    }
+
+    // The second pull should scan forward from the first pull's watermark,
+    // not repeat the same lookback-based window every time (see
+    // pullAndStoreNewMessages' doc comment).
+    @Test
+    fun testSecondPullScansForwardFromTheWatermarkInsteadOfTheFullLookback() = testApplication {
+        val firstMessage = GmailMessage(
+            id = "1", subject = "First", from = TEST_SENDER,
+            date = "Mon, 1 Sep 2026 10:00:00 -0400", receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+            bodyText = "First body."
+        )
+        val gmailClient = FakeGmailClient(listOf(firstMessage))
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        val scanStateStore = FakeScanStateRepository()
+        testModule(userStore = userStore, gmailClient = gmailClient, messageStore = messageStore, scanStateStore = scanStateStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        val firstSince = gmailClient.lastSinceUsed!!
+        awaitMessagesProcessed(messageStore)
+
+        client.get("/inbox")
+        val secondSince = gmailClient.lastSinceUsed!!
+
+        assertTrue(secondSince.isAfter(firstSince), "Second pull should scan from the watermark left by the first message, not the original lookback window")
+        assertEquals(firstMessage.receivedAt, secondSince)
     }
 
     @Test

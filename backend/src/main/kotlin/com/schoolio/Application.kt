@@ -11,12 +11,16 @@ import io.ktor.server.engine.*
 import io.ktor.server.freemarker.*
 import io.ktor.server.http.content.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import freemarker.cache.ClassTemplateLoader
 import freemarker.core.HTMLOutputFormat
 import freemarker.template.Configuration
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 
 fun main() {
@@ -63,6 +67,12 @@ private val geminiHttpClient: HttpClient by lazy {
     }
 }
 
+// Backs the debounced inbox-processing pass (see InboxRoutes.kt) - same
+// SupervisorJob + Dispatchers.IO shape as foodie's own module-level
+// backgroundScope, so one message's Gemini failure can't cancel the sweep
+// for the rest, and IO-bound work doesn't tie up a request-handling thread.
+private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
 fun Application.module(
     // Falls back to a hardcoded insecure dev value if unset, same pattern as
     // sessionSecret below - fine locally, but must be set on Cloud Run or
@@ -90,12 +100,25 @@ fun Application.module(
         firestoreClient,
         parseSchoolSenders(System.getenv("SCHOOL_SENDERS")),
         System.getenv("LOOKBACK_WEEKS")?.toIntOrNull() ?: 4
-    )
+    ),
+    messageStore: MessageRepository = FirestoreMessageStore(firestoreClient),
+    actionItemStore: ActionItemRepository = FirestoreActionItemStore(firestoreClient),
+    scanStateStore: ScanStateRepository = FirestoreScanStateStore(firestoreClient),
+    // Overridable only so tests don't have to sleep the real default - see
+    // InboxRoutes.kt's doc comment on the default value.
+    inboxProcessDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
         setOutputFormat(HTMLOutputFormat.INSTANCE)
         autoEscapingPolicy = Configuration.ENABLE_IF_DEFAULT_AUTO_ESCAPING_POLICY
+    }
+
+    // Server-side JSON responses (GET /inbox/status - see InboxRoutes.kt),
+    // distinct from the client-side ContentNegotiation installed on
+    // oauthHttpClient/geminiHttpClient above.
+    install(ContentNegotiation) {
+        json()
     }
 
     installGoogleAuth(oauthClient, oauthRedirectBaseUrl, sessionSecret)
@@ -116,7 +139,11 @@ fun Application.module(
         authRoutes(oauthClient, userStore, allowedEmails)
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
-            inboxRoutes(userStore, gmailClient, geminiClient, settingsStore)
+            inboxRoutes(
+                userStore, gmailClient, geminiClient, settingsStore,
+                messageStore, actionItemStore, scanStateStore,
+                backgroundScope, inboxProcessDebounceMs
+            )
         }
     }
 }

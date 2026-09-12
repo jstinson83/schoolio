@@ -164,15 +164,77 @@ Worth checking there for precedent before inventing a new pattern here.
 
 ## Not yet decided / open questions
 
-- How periodic email pulling runs (background job vs. purely on-open) —
-  `GET /inbox` currently only pulls on-demand, when the page is loaded (and
-  re-scans + re-runs Gemini on every visit — no caching/dedup of
-  already-seen messages yet, so revisiting the page re-spends a Gemini call
-  per matching message every time).
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
   (auto-create vs. confirm-first).
+- No manual retry for a FAILED message yet (see "Message pull/processing
+  pipeline" below) — today the only way to retry is whatever naturally
+  re-triggers `pullAndStoreNewMessages` (a page reload), and that never
+  re-processes a message already stored, FAILED or not.
+
+## Message pull/processing pipeline (decided)
+
+Resolves what used to be this section's top open question ("how periodic
+pulling runs, no dedup yet") — `GET /inbox` used to pull from Gmail *and*
+run every message through Gemini synchronously in the same request, which
+is what made the page freeze while scanning. Now split into two phases:
+
+- **Pull (`pullAndStoreNewMessages`, `InboxRoutes.kt`)** — runs synchronously
+  on every `GET /inbox`, but is just one IMAP round trip: fetch, then
+  `MessageRepository.storeIfAbsent` each result as a raw `EmailMessage`
+  (`MessageStore.kt`) with `status = PENDING`. Fast enough not to block the
+  page. Doc id is the Gmail Message-ID (sanitized only to strip a stray "/"),
+  making a re-pull of an already-stored message a no-op rather than a
+  double-store/reprocess — this is what makes it safe for `since` (below) to
+  sometimes re-request messages already seen.
+- **Process (`processPendingMessages`, `InboxProcessingSweep.kt`)** —
+  debounced: every `GET /inbox` cancels-and-reschedules one shared
+  `backgroundScope.launch { delay(...); ... }` job
+  (`DEFAULT_INBOX_PROCESS_DEBOUNCE_MS`, overridable for tests), same
+  cancel-and-relaunch shape as foodie's `addItemResolveJobs`. One job total,
+  not keyed per user — both household accounts share one message collection,
+  so their pulls coalesce into one processing pass. Runs Gemini over every
+  still-`PENDING` message, writes its `actionItems` (see below) and marks
+  the message `PROCESSED` (with Gemini's summary) or `FAILED` (with a
+  reason) — never left silently `PENDING` forever on an error, and never
+  silently dropped either.
+- **`GET /inbox/status`** — polled by `inbox.ftl`'s processing banner
+  (`app.js`) while any message is `PENDING` at page load, so a message that
+  finishes after the page rendered updates in place without a manual reload
+  — same shape as foodie's `GET /recipe/status` banner.
+
+**Action items are first-class** (`ActionItemStore.kt`), not nested inside
+the message: their own top-level `actionItems` Firestore collection, schema
+`(title, description, date)`, with `sourceMessageId` linking back to the raw
+`EmailMessage` for provenance only — that link isn't part of the main app
+flow, which still just renders action items inline under their message
+(`inbox.ftl`). `date` is one combined ISO-8601 field (`YYYY-MM-DD`, or
+`YYYY-MM-DD'T'HH:MM` when Gemini also extracted a time) — `dueDate`/`dueTime`
+stay separate through Gemini's own extraction step (`GeminiClient.kt`'s
+`ExtractedActionItem`, previously named plain `ActionItem` — renamed to free
+up the `ActionItem` name for this persisted domain type) for the same
+"don't force a time that wasn't stated" reason as before; they only collapse
+into one field at the point `InboxProcessingSweep.kt` turns an extraction
+into a persisted `ActionItem`.
+
+**Rescanning is watermark-based, not a rolling lookback window every time**
+(`ScanStateStore.kt`). Per-sender, not one global value — keyed on `sender`
+name deliberately (not a single "furthest advanced" value), so adding a new
+sender to `ScanSettings` doesn't inherit another sender's more-recent
+watermark and silently skip its own older mail. A sender with no watermark
+yet falls back to `ScanSettings.lookbackWeeks` (which is now relevant only
+for a sender's first-ever scan, not every scan). One doc, an array of
+`{sender, seenAt}` entries updated via transactional read-modify-write (same
+shape as foodie's `GroceryListStore.mutateItems`) rather than a Firestore map
+keyed by the raw sender string — sender addresses/domains contain `.`/`@`,
+and Firestore's dotted-path field semantics for map keys with those
+characters is easy to get subtly wrong.
+`GmailClient.searchMessages` takes `since: Instant` (an absolute point in
+time) rather than the old `sinceWeeks: Int` (a rolling window) — the route
+computes `since` as the earliest point any configured sender still needs
+scanning from (`min` across each sender's watermark-or-lookback-fallback),
+issuing one IMAP search covering every sender in that single window.
 
 ## Configuration reference
 
