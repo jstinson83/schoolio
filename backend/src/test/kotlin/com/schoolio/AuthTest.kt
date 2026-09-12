@@ -24,9 +24,11 @@ class AuthTest {
         testModule(userStore = userStore, allowedEmails = setOf(TEST_EMAIL))
         val client = signInFakeUser()
 
+        // "/" sends signed-in visitors straight to the inbox now rather than
+        // rendering splash.ftl's "Signed in as" state.
         val response = client.get("/")
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(response.bodyAsText().contains("Signed in as $TEST_EMAIL"))
+        assertEquals(HttpStatusCode.Found, response.status)
+        assertEquals("/inbox", response.headers[HttpHeaders.Location])
         assertEquals(1, userStore.created.size)
         // Google sign-in no longer carries any Gmail credential - a fresh
         // account has no app password until the separate /inbox/connect-gmail
@@ -66,17 +68,19 @@ class AuthTest {
     // Regression test for the real bug hit in production: a duplicate
     // /auth/google/callback request (reusing an already-consumed
     // authorization code) can redirect to /?authError=1 even after an
-    // earlier request already completed sign-in successfully - splash.ftl
-    // must not show the error banner once a real session exists, or a
-    // successful sign-in looks broken.
+    // earlier request already completed sign-in successfully - a signed-in
+    // visit to "/" must never show the error banner, or a successful
+    // sign-in looks broken. Now that "/" redirects signed-in visitors
+    // straight to /inbox, splash.ftl (and its banner) never even renders
+    // for them, stale authError param or not.
     @Test
     fun testSuccessfulSignInHidesErrorBannerEvenWithStaleAuthErrorParam() = testApplication {
         testModule()
         val client = signInFakeUser()
 
         val page = client.get("/?authError=1")
-        assertTrue(page.bodyAsText().contains("Signed in as"))
-        assertFalse(page.bodyAsText().contains("Couldn't sign you in"))
+        assertEquals(HttpStatusCode.Found, page.status)
+        assertEquals("/inbox", page.headers[HttpHeaders.Location])
     }
 
     @Test
@@ -99,7 +103,7 @@ class AuthTest {
     fun testLogoutClearsSession() = testApplication {
         testModule()
         val client = signInFakeUser()
-        assertTrue(client.get("/").bodyAsText().contains("Signed in as"))
+        assertEquals("/inbox", client.get("/").headers[HttpHeaders.Location])
 
         client.post("/logout")
 
