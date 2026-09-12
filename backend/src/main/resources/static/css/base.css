@@ -106,3 +106,14 @@ body {
 .settings-form input[type="number"] {
     width: 5rem;
 }
+
+.settings-form input[type="password"] {
+    width: 20rem;
+    max-width: 100%;
+}
+
+.field-hint {
+    color: #666;
+    font-size: 0.8125rem;
+    margin: -0.5rem 0 1rem;
+}

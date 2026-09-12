@@ -1,145 +1,131 @@
 package com.schoolio
 
-import io.ktor.client.*
-import io.ktor.client.call.*
-import io.ktor.client.request.*
-import io.ktor.client.request.forms.*
-import io.ktor.http.*
+import jakarta.mail.Folder
+import jakarta.mail.Message
+import jakarta.mail.Multipart
+import jakarta.mail.Part
+import jakarta.mail.Session
+import jakarta.mail.internet.MimeMessage
+import jakarta.mail.search.AndTerm
+import jakarta.mail.search.ComparisonTerm
+import jakarta.mail.search.FromStringTerm
+import jakarta.mail.search.OrTerm
+import jakarta.mail.search.ReceivedDateTerm
+import jakarta.mail.search.SearchTerm
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.Instant
-import java.util.Base64
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
+import java.util.Date
+import java.util.Properties
 
-// What callers (InboxRoutes.kt) actually need - trimmed down from Gmail's
-// full message resource, same "shape of what we use, not what the API
-// returns" reasoning as GoogleUserInfo in GoogleAuthFlow.kt. bodyText is the
-// plain-text email body (falling back to Gmail's snippet if no text/plain
-// part is found) - GeminiClient needs the actual content, not just headers.
+// What callers (InboxRoutes.kt) actually need - trimmed down from a full
+// jakarta.mail Message, same "shape of what we use" reasoning as
+// GoogleUserInfo in GoogleAuthFlow.kt. bodyText is the plain-text email body
+// (falling back to a crude HTML-stripped version if no text/plain part is
+// found) - GeminiClient needs the actual content, not just headers.
 data class GmailMessage(val id: String, val subject: String, val from: String, val date: String, val bodyText: String)
 
 interface GmailClient {
-    // refreshToken is per-user (User.googleRefreshToken) - the caller is
-    // responsible for having one (i.e. having signed in and granted Gmail
-    // access at least once); this interface doesn't touch UserRepository
-    // itself. senders/sinceWeeks scope the search server-side (Gmail's own
-    // `q` search operators) rather than pulling everything and filtering
-    // locally - see README's "I don't want to pull all my email" framing.
-    suspend fun searchMessages(refreshToken: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage>
+    // email/appPassword are per-user (User.email/User.gmailAppPassword) - the
+    // caller is responsible for having one (i.e. having entered an app
+    // password via the /inbox connect-Gmail form); this interface doesn't
+    // touch UserRepository itself. senders/sinceWeeks scope the IMAP SEARCH
+    // server-side (never pulling the whole mailbox locally to filter) - see
+    // README's "I don't want to pull all my email" framing.
+    suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage>
 }
 
-// Comma-separated list of sender addresses/domains to scan for - Gmail's
-// `from:` search operator accepts either. Configurable via SCHOOL_SENDERS
-// rather than hardcoded, since which teachers/school accounts to watch
-// differs per household and changes over time. Empty/unset means "nothing
-// configured yet", a distinct state from "configured but zero messages
-// found" - InboxRoutes checks for it before ever calling Gmail.
+// Comma-separated list of sender addresses/domains to scan for - IMAP's FROM
+// search term does a substring match, so either a full address or a bare
+// domain works. Configurable via SCHOOL_SENDERS rather than hardcoded, since
+// which teachers/school accounts to watch differs per household and changes
+// over time. Empty/unset means "nothing configured yet", a distinct state
+// from "configured but zero messages found" - InboxRoutes checks for it
+// before ever calling Gmail.
 fun parseSchoolSenders(raw: String?): List<String> =
     (raw ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
-@Serializable
-private data class TokenRefreshResponse(@SerialName("access_token") val accessToken: String)
-
-@Serializable
-private data class GmailMessageListResponse(val messages: List<GmailMessageId> = emptyList())
-
-@Serializable
-private data class GmailMessageId(val id: String)
-
-@Serializable
-private data class GmailMessageDetail(val id: String, val snippet: String = "", val payload: GmailMessagePayload)
-
-@Serializable
-private data class GmailMessagePayload(
-    val mimeType: String = "",
-    val headers: List<GmailHeader> = emptyList(),
-    val body: GmailMessageBody = GmailMessageBody(),
-    val parts: List<GmailMessagePayload> = emptyList()
-)
-
-@Serializable
-private data class GmailMessageBody(val data: String? = null)
-
-@Serializable
-private data class GmailHeader(val name: String, val value: String)
-
-// Plain REST calls against Gmail's API, not the google-api-services-gmail
-// client library - consistent with how foodie's own Google/Firebase REST
-// calls (GoogleAuthFlow.kt, EmailAuthFlow.kt) go through a plain injected
-// HttpClient rather than a provider-specific SDK, which is also what makes
-// this interface fake-able with MockEngine in tests the same way.
-class RestGmailClient(private val httpClient: HttpClient) : GmailClient {
-    // A short-lived access token minted fresh from the stored refresh token
-    // on every call, rather than cached - schoolio pulls email rarely (on
-    // app open, or periodically - see README's open questions), so there's
-    // no hot path here worth the complexity of caching a ~1-hour token.
-    private suspend fun refreshAccessToken(refreshToken: String): String {
-        val response = httpClient.submitForm(
-            url = "https://oauth2.googleapis.com/token",
-            formParameters = Parameters.build {
-                append("client_id", System.getenv("GOOGLE_CLIENT_ID") ?: "")
-                append("client_secret", System.getenv("GOOGLE_CLIENT_SECRET") ?: "")
-                append("refresh_token", refreshToken)
-                append("grant_type", "refresh_token")
+// Plain IMAP (Jakarta Mail), not the Gmail REST API/OAuth this replaced -
+// see UserStore.kt's User.gmailAppPassword doc comment for why: avoids
+// gmail.readonly's restricted-scope OAuth verification requirement (a paid,
+// recurring CASA Tier 2 assessment) entirely, at the cost of a broader
+// per-mailbox credential instead of a narrowly-scoped OAuth token. host/port/
+// protocol are constructor params (not hardcoded) purely so tests can point
+// this at an in-process fake IMAP server (GreenMail) instead of real Gmail -
+// see ImapGmailClientTest.
+class ImapGmailClient(
+    private val host: String = "imap.gmail.com",
+    private val port: Int = 993,
+    private val protocol: String = "imaps"
+) : GmailClient {
+    // Jakarta Mail's Store/Folder/Message API is blocking I/O, not
+    // coroutine-friendly - withContext(Dispatchers.IO) keeps it off whatever
+    // thread called this suspend fun, same reasoning Ktor's own docs give for
+    // wrapping blocking JDBC/file calls.
+    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> =
+        withContext(Dispatchers.IO) {
+            val session = Session.getInstance(Properties().apply { put("mail.store.protocol", protocol) })
+            val store = session.getStore(protocol)
+            try {
+                store.connect(host, port, email, appPassword)
+                val folder = store.getFolder("INBOX")
+                folder.open(Folder.READ_ONLY)
+                try {
+                    folder.search(buildSearchTerm(senders, sinceWeeks)).map { it.toGmailMessage() }
+                } finally {
+                    folder.close(false)
+                }
+            } finally {
+                store.close()
             }
-        )
-        return response.body<TokenRefreshResponse>().accessToken
-    }
-
-    // Epoch seconds (rather than Gmail's YYYY/MM/DD date form) so "n weeks"
-    // is exact down to the second instead of rounding to a calendar day.
-    private fun buildSearchQuery(senders: List<String>, sinceWeeks: Int): String {
-        val since = Instant.now().minus(Duration.ofDays(sinceWeeks * 7L)).epochSecond
-        val senderClause = senders.joinToString(" OR ") { "from:$it" }
-        return "after:$since ($senderClause)"
-    }
-
-    override suspend fun searchMessages(refreshToken: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> {
-        val accessToken = refreshAccessToken(refreshToken)
-        val list = httpClient.get("https://gmail.googleapis.com/gmail/v1/users/me/messages") {
-            header(HttpHeaders.Authorization, "Bearer $accessToken")
-            parameter("q", buildSearchQuery(senders, sinceWeeks))
-        }.body<GmailMessageListResponse>()
-
-        // format=full (not metadata) since Gemini needs the actual body text,
-        // not just headers - the tradeoff InboxRoutes.kt's earlier
-        // metadata-only proof-of-pull didn't have to make.
-        return list.messages.map { msg ->
-            val detail = httpClient.get("https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}") {
-                header(HttpHeaders.Authorization, "Bearer $accessToken")
-                parameter("format", "full")
-            }.body<GmailMessageDetail>()
-            val headers = detail.payload.headers.associateBy { it.name }
-            GmailMessage(
-                id = detail.id,
-                subject = headers["Subject"]?.value ?: "(no subject)",
-                from = headers["From"]?.value ?: "(unknown sender)",
-                date = headers["Date"]?.value ?: "",
-                // Falls back to Gmail's own snippet (a short plain-text
-                // preview it always includes) for the rare message with no
-                // text/plain part at all, rather than sending nothing to
-                // Gemini.
-                bodyText = extractPlainText(detail.payload).ifBlank { detail.snippet }
-            )
         }
+
+    private fun buildSearchTerm(senders: List<String>, sinceWeeks: Int): SearchTerm {
+        val since = Date.from(Instant.now().minus(Duration.ofDays(sinceWeeks * 7L)))
+        val senderTerm = OrTerm(senders.map { FromStringTerm(it) }.toTypedArray())
+        return AndTerm(senderTerm, ReceivedDateTerm(ComparisonTerm.GE, since))
     }
 
-    private fun extractPlainText(payload: GmailMessagePayload): String {
-        if (payload.mimeType == "text/plain" && payload.body.data != null) {
-            return decodeBase64Url(payload.body.data)
-        }
-        for (part in payload.parts) {
-            val text = extractPlainText(part)
-            if (text.isNotBlank()) return text
+    private fun Message.toGmailMessage(): GmailMessage = GmailMessage(
+        // Message-ID header when available (stable across sessions) -
+        // messageNumber alone can be reassigned between IMAP sessions, so
+        // it's only a last-resort fallback for a message that somehow lacks
+        // one.
+        id = (this as? MimeMessage)?.messageID ?: "msg-$messageNumber",
+        subject = subject ?: "(no subject)",
+        from = from?.firstOrNull()?.toString() ?: "(unknown sender)",
+        date = (sentDate ?: receivedDate)?.toString() ?: "",
+        bodyText = extractPlainText(this).ifBlank { extractFirstHtmlAsText(this) }
+    )
+
+    private fun extractPlainText(part: Part): String {
+        if (part.isMimeType("text/plain")) return (part.content as? String) ?: ""
+        if (part.isMimeType("multipart/*")) {
+            val multipart = part.content as Multipart
+            for (i in 0 until multipart.count) {
+                val text = extractPlainText(multipart.getBodyPart(i))
+                if (text.isNotBlank()) return text
+            }
         }
         return ""
     }
 
-    // Gmail's body data is base64url-encoded, typically without padding -
-    // java.util.Base64's decoder wants valid padding, so pad it back out
-    // rather than relying on undocumented lenient behavior.
-    private fun decodeBase64Url(data: String): String {
-        val padded = data + "=".repeat((4 - data.length % 4) % 4)
-        return String(Base64.getUrlDecoder().decode(padded), Charsets.UTF_8)
+    // Last resort for a message with no text/plain part at all (some HTML-only
+    // newsletters) - a crude tag strip rather than pulling in a full HTML
+    // parser (Jsoup, as foodie uses) just for this one fallback path.
+    private fun extractFirstHtmlAsText(part: Part): String {
+        if (part.isMimeType("text/html")) {
+            val html = (part.content as? String) ?: return ""
+            return html.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+        }
+        if (part.isMimeType("multipart/*")) {
+            val multipart = part.content as Multipart
+            for (i in 0 until multipart.count) {
+                val text = extractFirstHtmlAsText(multipart.getBodyPart(i))
+                if (text.isNotBlank()) return text
+            }
+        }
+        return ""
     }
 }

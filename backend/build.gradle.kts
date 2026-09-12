@@ -29,7 +29,14 @@ dependencies {
     implementation("io.ktor:ktor-client-content-negotiation-jvm")
     implementation("ch.qos.logback:logback-classic:1.4.14")
     implementation("com.google.cloud:google-cloud-firestore:3.31.0")
+    // IMAP client for ImapGmailClient - Gmail access now goes through IMAP +
+    // per-user app passwords, not the Gmail REST API/OAuth (see GmailClient.kt).
+    implementation("com.sun.mail:jakarta.mail:2.0.1")
     testImplementation("io.ktor:ktor-server-tests-jvm")
     testImplementation("io.ktor:ktor-client-mock-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
+    // In-process fake SMTP/IMAP server so ImapGmailClientTest exercises real
+    // IMAP protocol handling, not just a hand-rolled fake - MockEngine (used
+    // for the Gmail REST/OAuth-era tests) doesn't apply to IMAP.
+    testImplementation("com.icegreen:greenmail:2.0.1")
 }

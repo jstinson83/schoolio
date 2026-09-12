@@ -16,25 +16,23 @@ data class User(
     val googleSub: String,
     val email: String,
     val name: String,
-    // Only ever set from a token exchange that actually returned one (Google
-    // only issues a refresh token on first consent, or when the authorize
-    // request forces re-consent - see googleOAuthProvider's extraAuthParameters
-    // in GoogleAuthFlow.kt). Nullable rather than required so a user can still
-    // sign in (browse-only) even if Gmail access hasn't been granted/stored
-    // yet - GmailClient callers must check for null and prompt to (re)connect.
-    val googleRefreshToken: String? = null,
+    // A Gmail "app password" (myaccount.google.com/apppasswords), entered by
+    // the user via the /inbox connect-Gmail form - NOT part of the Google
+    // sign-in OAuth flow. Deliberately decoupled: Google sign-in is just
+    // identity (openid/email/profile, see GoogleAuthFlow.kt), while Gmail
+    // *data* access goes through plain IMAP with this credential instead of
+    // the Gmail REST API/OAuth - avoids the gmail.readonly restricted-scope
+    // verification requirement entirely (see context.md's Gmail integration
+    // notes). Nullable since a user can sign in without having connected
+    // Gmail yet - InboxRoutes.kt checks for null and prompts to enter one.
+    val gmailAppPassword: String? = null,
     val createdAt: Instant? = null
 )
 
 interface UserRepository {
     suspend fun findOrCreateByGoogle(googleSub: String, email: String, name: String): User
     suspend fun find(id: String): User?
-
-    // Separate from findOrCreateByGoogle because a refresh token is only
-    // present on some sign-ins (see User.googleRefreshToken's doc comment) -
-    // keeping it its own write means a sign-in that didn't get a new one
-    // doesn't accidentally null out a previously stored one.
-    suspend fun saveGoogleRefreshToken(id: String, refreshToken: String)
+    suspend fun saveGmailAppPassword(id: String, appPassword: String)
 }
 
 // Uses ApiFuture.get() (blocking the calling thread inside a suspend fun),
@@ -67,8 +65,8 @@ class FirestoreUserStore(private val firestore: Firestore) : UserRepository {
         return toUser(id, doc.data ?: emptyMap())
     }
 
-    override suspend fun saveGoogleRefreshToken(id: String, refreshToken: String) {
-        collection.document(id).update("googleRefreshToken", refreshToken).get()
+    override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
+        collection.document(id).update("gmailAppPassword", appPassword).get()
     }
 
     private fun toUser(id: String, data: Map<String, Any?>): User = User(
@@ -76,7 +74,7 @@ class FirestoreUserStore(private val firestore: Firestore) : UserRepository {
         googleSub = data["googleSub"] as? String ?: id,
         email = data["email"] as? String ?: "",
         name = data["name"] as? String ?: "",
-        googleRefreshToken = data["googleRefreshToken"] as? String,
+        gmailAppPassword = data["gmailAppPassword"] as? String,
         createdAt = (data["createdAt"] as? Timestamp)?.let { Instant.ofEpochSecond(it.seconds, it.nanos.toLong()) }
     )
 }

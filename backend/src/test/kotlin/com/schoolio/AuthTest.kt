@@ -28,10 +28,10 @@ class AuthTest {
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("Signed in as $TEST_EMAIL"))
         assertEquals(1, userStore.created.size)
-        // extraAuthParameters (GoogleAuthFlow.kt) requests a fresh
-        // refresh_token on every sign-in - confirm it actually got saved,
-        // not just that sign-in succeeded.
-        assertEquals("fake-refresh-token", userStore.find(TEST_SUB)?.googleRefreshToken)
+        // Google sign-in no longer carries any Gmail credential - a fresh
+        // account has no app password until the separate /inbox/connect-gmail
+        // form is submitted (see InboxTest).
+        assertEquals(null, userStore.find(TEST_SUB)?.gmailAppPassword)
     }
 
     @Test

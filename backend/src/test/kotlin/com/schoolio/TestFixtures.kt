@@ -35,21 +35,24 @@ class FakeUserRepository : UserRepository {
 
     override suspend fun find(id: String): User? = usersById[id]
 
-    override suspend fun saveGoogleRefreshToken(id: String, refreshToken: String) {
-        usersById[id]?.let { usersById[id] = it.copy(googleRefreshToken = refreshToken) }
+    override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
+        usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
 }
 
 class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {
-    var lastRefreshTokenUsed: String? = null
+    var lastEmailUsed: String? = null
+        private set
+    var lastAppPasswordUsed: String? = null
         private set
     var lastSendersUsed: List<String>? = null
         private set
     var lastSinceWeeksUsed: Int? = null
         private set
 
-    override suspend fun searchMessages(refreshToken: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> {
-        lastRefreshTokenUsed = refreshToken
+    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> {
+        lastEmailUsed = email
+        lastAppPasswordUsed = appPassword
         lastSendersUsed = senders
         lastSinceWeeksUsed = sinceWeeks
         return messages
@@ -90,14 +93,13 @@ class FakeGeminiClient(
 // Stands in for Google's OAuth token/userinfo endpoints, same shape as
 // foodie's fakeGoogleOAuthClient - lets AuthTest drive the real
 // /auth/google -> /auth/google/callback round trip without leaving the
-// process. issuesRefreshToken mirrors extraAuthParameters actually getting a
-// refresh_token back from Google (see GoogleAuthFlow.kt's doc comment on why
-// that's requested on every sign-in, not just the first).
+// process. No refresh_token in the token response anymore - this flow only
+// ever requests identity scopes now (see GoogleAuthFlow.kt), Gmail access is
+// a separate IMAP app-password concern entirely (GmailClient.kt).
 fun fakeGoogleOAuthClient(
     sub: String = TEST_SUB,
     email: String = TEST_EMAIL,
-    name: String = TEST_NAME,
-    issuesRefreshToken: Boolean = true
+    name: String = TEST_NAME
 ): HttpClient =
     HttpClient(MockEngine) {
         install(ContentNegotiation) {
@@ -107,14 +109,11 @@ fun fakeGoogleOAuthClient(
             addHandler { request ->
                 val url = request.url.toString()
                 when {
-                    url.startsWith("https://oauth2.googleapis.com/token") -> {
-                        val refreshTokenField = if (issuesRefreshToken) ""","refresh_token":"fake-refresh-token"""" else ""
-                        respond(
-                            """{"access_token":"fake-access-token","token_type":"Bearer"$refreshTokenField}""",
-                            HttpStatusCode.OK,
-                            headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                        )
-                    }
+                    url.startsWith("https://oauth2.googleapis.com/token") -> respond(
+                        """{"access_token":"fake-access-token","token_type":"Bearer"}""",
+                        HttpStatusCode.OK,
+                        headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                    )
                     url.startsWith("https://www.googleapis.com/oauth2/v3/userinfo") -> respond(
                         """{"sub":"$sub","email":"$email","name":"$name"}""",
                         HttpStatusCode.OK,
@@ -166,5 +165,19 @@ suspend fun ApplicationTestBuilder.signInFakeUser(): HttpClient {
     val state = Url(location).parameters["state"]
         ?: error("Expected a state param in the Google authorize URL: $location")
     client.get("/auth/google/callback?code=fake-code&state=$state")
+    return client
+}
+
+// Signs in (as signInFakeUser does) and separately saves a Gmail app
+// password via the userStore directly, bypassing the /inbox/connect-gmail
+// form - for tests whose focus is "given a connected account, does the
+// inbox scan behave correctly", not the connect-Gmail flow itself.
+suspend fun ApplicationTestBuilder.signInFakeUserWithGmailConnected(
+    userStore: UserRepository,
+    appPassword: String = "fake-app-password",
+    sub: String = TEST_SUB
+): HttpClient {
+    val client = signInFakeUser()
+    userStore.saveGmailAppPassword(sub, appPassword)
     return client
 }

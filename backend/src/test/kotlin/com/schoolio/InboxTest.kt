@@ -30,9 +30,7 @@ class InboxTest {
         val userStore = FakeUserRepository()
         val settingsStore = FakeSettingsRepository(ScanSettings(listOf(TEST_SENDER), 3))
         testModule(userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient, settingsStore = settingsStore)
-        val client = signInFakeUser()
-        // findOrCreateByGoogle/saveGoogleRefreshToken already ran as part of
-        // sign-in (see Auth.kt's callback) - nothing extra to set up here.
+        val client = signInFakeUserWithGmailConnected(userStore, appPassword = "fake-app-password")
 
         val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
@@ -44,44 +42,84 @@ class InboxTest {
         assertTrue(body.contains("2026-09-04"))
         // The settings form should be pre-filled with the current values.
         assertTrue(body.contains(TEST_SENDER))
-        assertEquals("fake-refresh-token", gmailClient.lastRefreshTokenUsed)
+        assertEquals(TEST_EMAIL, gmailClient.lastEmailUsed)
+        assertEquals("fake-app-password", gmailClient.lastAppPasswordUsed)
         assertEquals(listOf(TEST_SENDER), gmailClient.lastSendersUsed)
         assertEquals(3, gmailClient.lastSinceWeeksUsed)
         assertEquals(listOf("Field trip permission slip"), geminiClient.extractedSubjects)
     }
 
     @Test
-    fun testInboxPromptsForGmailAccessWithNoStoredRefreshToken() = testApplication {
+    fun testInboxPromptsToConnectGmailWithNoStoredAppPassword() = testApplication {
         val userStore = FakeUserRepository()
-        // issuesRefreshToken = false simulates a sign-in where Google didn't
-        // return one (shouldn't normally happen given extraAuthParameters,
-        // but the route needs to handle it rather than crash - see
-        // InboxRoutes.kt's null check).
-        testModule(userStore = userStore, oauthClient = fakeGoogleOAuthClient(issuesRefreshToken = false))
+        testModule(userStore = userStore)
         val client = signInFakeUser()
 
         val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(response.bodyAsText().contains("Gmail access hasn't been granted yet"))
+        assertTrue(response.bodyAsText().contains("Gmail isn't connected yet"))
+    }
+
+    @Test
+    fun testConnectingGmailSavesAppPasswordAndEnablesScanning() = testApplication {
+        val gmailClient = FakeGmailClient(emptyList())
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = gmailClient)
+        val client = signInFakeUser()
+
+        // Not connected yet - /inbox shouldn't even attempt a scan.
+        assertTrue(client.get("/inbox").bodyAsText().contains("Gmail isn't connected yet"))
+        assertEquals(null, gmailClient.lastAppPasswordUsed)
+
+        val connectResponse = client.submitForm(
+            url = "/inbox/connect-gmail",
+            formParameters = Parameters.build { append("appPassword", "new-app-password") }
+        )
+        assertEquals(HttpStatusCode.Found, connectResponse.status)
+        assertEquals("/inbox", connectResponse.headers[HttpHeaders.Location])
+        assertEquals("new-app-password", userStore.find(TEST_SUB)?.gmailAppPassword)
+
+        val inboxResponse = client.get("/inbox")
+        assertFalse(inboxResponse.bodyAsText().contains("Gmail isn't connected yet"))
+        assertEquals("new-app-password", gmailClient.lastAppPasswordUsed)
+    }
+
+    // A blank submission (e.g. the form's re-submitted without typing
+    // anything into the now-empty-by-design field) shouldn't wipe out an
+    // already-stored app password - see InboxRoutes.kt's isNullOrEmpty check.
+    @Test
+    fun testConnectingGmailWithBlankPasswordDoesNotOverwriteExisting() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUserWithGmailConnected(userStore, appPassword = "original-password")
+
+        client.submitForm(
+            url = "/inbox/connect-gmail",
+            formParameters = Parameters.build { append("appPassword", "") }
+        )
+
+        assertEquals("original-password", userStore.find(TEST_SUB)?.gmailAppPassword)
     }
 
     @Test
     fun testInboxPromptsToConfigureSendersWhenNoneSet() = testApplication {
         val gmailClient = FakeGmailClient()
-        testModule(gmailClient = gmailClient, settingsStore = FakeSettingsRepository(ScanSettings(emptyList(), 4)))
-        val client = signInFakeUser()
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = gmailClient, settingsStore = FakeSettingsRepository(ScanSettings(emptyList(), 4)))
+        val client = signInFakeUserWithGmailConnected(userStore)
 
         val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("No school senders are configured yet"))
         // Never even calls Gmail when nothing's configured to search for.
-        assertEquals(null, gmailClient.lastRefreshTokenUsed)
+        assertEquals(null, gmailClient.lastAppPasswordUsed)
     }
 
     @Test
     fun testInboxShowsNoMessagesFoundWhenSearchReturnsNothing() = testApplication {
-        testModule(gmailClient = FakeGmailClient(emptyList()))
-        val client = signInFakeUser()
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()))
+        val client = signInFakeUserWithGmailConnected(userStore)
 
         val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
