@@ -18,6 +18,22 @@ class AuthTest {
         assertFalse(body.contains("Signed in as"), "Signed-out splash page shouldn't show the signed-in state")
     }
 
+    // Regression test for a real bug: Application.kt always puts "authError"
+    // in splash.ftl's model as a Boolean (true or false), never absent, so
+    // the template's old "authError??" check (which tests whether the
+    // variable is defined, not whether it's true) was always true - the
+    // "Couldn't sign you in" banner showed on every plain visit to "/",
+    // even one that never touched /auth/google at all.
+    @Test
+    fun testSplashHidesErrorBannerWithNoAuthErrorParam() = testApplication {
+        testModule()
+        val response = client.get("/")
+        assertFalse(
+            response.bodyAsText().contains("Couldn't sign you in"),
+            "A plain signed-out visit with no ?authError param shouldn't show the sign-in error banner"
+        )
+    }
+
     @Test
     fun testAllowedEmailCanSignIn() = testApplication {
         val userStore = FakeUserRepository()

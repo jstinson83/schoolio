@@ -123,19 +123,42 @@ hit the same way.
 - **schoolio needs its own OAuth 2.0 Client ID**, distinct from `foodie`'s,
   even though both share the `foodie-503510` GCP project/consent screen —
   a Client ID's redirect URIs are specific to one app.
-- **A stray `?authError=1` can land in the URL even after a real,
-  successful sign-in** - hit in production, not just theoretical. A
-  duplicate `/auth/google/callback` request (Google's own internal
-  redirect chain when the browser already has an active Google session
-  can fire the callback more than once) tries to reuse an
-  already-consumed authorization code on the second hit; that one fails
-  and redirects to `/?authError=1`, even though the *first* hit already
-  completed sign-in successfully. `splash.ftl` used to show the error
-  banner purely off `authError??`, independent of whether `currentUser`
-  was set - fixed by gating the banner on `authError?? && !(currentUser??)`
-  (parenthesized deliberately - FreeMarker's `!`/`??` precedence when
-  mixed is easy to get wrong). See `testSuccessfulSignInHidesErrorBanner...`
-  in `AuthTest.kt` for the regression test.
+- **FreeMarker's `??` (existence) built-in tests whether a variable is
+  *defined*, not whether it's *true* - checking a real `Boolean` model
+  value with `??` is very likely a bug, not just a style choice.**
+  `Application.kt`'s `GET /` handler always puts `"authError"` in
+  `splash.ftl`'s model as an actual `Boolean` (`queryParameters["authError"]
+  != null`) - present whether the query param was there or not. `splash.ftl`
+  used to gate its "Couldn't sign you in" banner on `authError??`, which is
+  always true once a variable is merely *present* - so the banner rendered
+  on every plain visit to `/`, signed out, whether or not anyone had ever
+  attempted (or failed) a sign-in. Hit for real, not just theoretical - not
+  caught by `testSplashShowsSignInWhenSignedOut` because that test never
+  asserted the banner's *absence*. Fixed by reading the actual value with
+  the default-value operator instead (`authError!false`) -
+  `testSplashHidesErrorBannerWithNoAuthErrorParam` in `AuthTest.kt` is the
+  regression test. If a future template checks a Boolean/String model value
+  with `??`, assume it has the same bug rather than trusting it means what
+  it looks like it means.
+  - Separately: a stray `?authError=1` can land in the URL even after a
+    real, successful sign-in - a duplicate `/auth/google/callback` request
+    (Google's own internal redirect chain when the browser already has an
+    active Google session can fire the callback more than once) tries to
+    reuse an already-consumed authorization code on the second hit; that
+    one fails and redirects to `/?authError=1`, even though the *first* hit
+    already completed sign-in successfully. This one *is* handled, but not
+    by anything in `splash.ftl` - `currentUser` is never even in this
+    template's model (see its own comment) because `Application.kt`'s
+    `GET /` handler redirects a signed-in visitor straight to `/inbox`
+    *before* ever rendering `splash.ftl`, so a stale `authError=1` on an
+    already-signed-in request never reaches the template at all. An earlier
+    version of this gotcha entry credited a `currentUser??` check inside
+    `splash.ftl` for this instead - that check was always a no-op (same
+    `??`-on-a-sometimes-false-value mistake as above, compounded by
+    `currentUser` never being defined there in the first place) and has
+    since been removed. See
+    `testSuccessfulSignInHidesErrorBannerEvenWithStaleAuthErrorParam` in
+    `AuthTest.kt` for that regression test.
 - **Gemini model names churn on Google's release schedule, same as
   `foodie`** — 1.5 and 2.0 Flash are both already retired as of mid-2026,
   and this project's own first pass at `GeminiClient.kt` shipped with
