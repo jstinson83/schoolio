@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background Container -->
+  <rect width="512" height="512" rx="115" fill="#1f3a5f"/>
+
+  <!-- Main Calendar Base -->
+  <rect x="76" y="96" width="360" height="340" rx="32" fill="#ffffff"/>
+  
+  <!-- Calendar Header Block -->
+  <path d="M 76 128 C 76 110.327 90.327 96 108 96 L 404 96 C 421.673 96 436 110.327 436 128 L 436 184 L 76 184 Z" fill="#c0392b"/>
+
+  <!-- Binder Rings / Hanging Loops -->
+  <rect x="148" y="64" width="28" height="64" rx="14" fill="#ffffff"/>
+  <rect x="154" y="70" width="16" height="52" rx="8" fill="#1f3a5f" opacity="0.2"/>
+  
+  <rect x="336" y="64" width="28" height="64" rx="14" fill="#ffffff"/>
+  <rect x="342" y="70" width="16" height="52" rx="8" fill="#1f3a5f" opacity="0.2"/>
+
+  <!-- Schedule Grid Dots/Tiles -->
+  <!-- Row 1 -->
+  <rect x="116" y="220" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="196" y="220" width="60" height="44" rx="10" fill="#c0392b"/>
+  <rect x="276" y="220" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="356" y="220" width="40" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+
+  <!-- Row 2 -->
+  <rect x="116" y="284" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="196" y="284" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="276" y="284" width="60" height="44" rx="10" fill="#c0392b"/>
+  <rect x="356" y="284" width="40" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+
+  <!-- Row 3 -->
+  <rect x="116" y="348" width="60" height="44" rx="10" fill="#c0392b"/>
+  <rect x="196" y="348" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="276" y="348" width="60" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+  <rect x="356" y="348" width="40" height="44" rx="10" fill="#1f3a5f" opacity="0.15"/>
+
+  <!-- Clock Overlay (Schedule/Time Badge) -->
+  <circle cx="360" cy="350" r="56" fill="#1f3a5f"/>
+  <circle cx="360" cy="350" r="46" fill="#ffffff"/>
+  <!-- Clock Hands -->
+  <path d="M 360 318 L 360 352 L 382 352" stroke="#c0392b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="360" cy="352" r="6" fill="#c0392b"/>
+</svg>
