@@ -17,18 +17,25 @@
             <img class="splash-icon" src="/logo.svg" alt="">
             <h1>Schoolio</h1>
 
-            <#-- currentUser is never in this template's model - Application.kt's
-                 "/" handler redirects a signed-in visitor straight to /inbox before
-                 splash.ftl ever renders (see its own comment), so this only ever
-                 renders for a signed-out visitor. That's also what makes a stray
-                 ?authError=1 on a successful sign-in harmless: a duplicate
-                 /auth/google/callback hit reusing an already-consumed authorization
-                 code can redirect here with authError=1 even after an earlier
-                 request already completed sign-in - but by the time the browser
-                 follows that redirect, the session cookie is set, so "/" sends it
-                 straight to /inbox instead of rendering this banner. See
+            <#-- Application.kt always puts "authError" in this model, as a real
+                 Boolean (true/false), never absent - so "authError??" (which tests
+                 whether the variable is *defined*, not whether it's *true*) was
+                 always true here regardless of the query param, showing this
+                 banner on every plain signed-out visit. "authError!false" reads
+                 its actual value (defaulting to false only if it were ever
+                 missing). currentUser is never in this template's model either -
+                 Application.kt's "/" handler redirects a signed-in visitor
+                 straight to /inbox before splash.ftl ever renders (see its own
+                 comment), so this only ever renders for a signed-out visitor.
+                 That's also what makes a stray ?authError=1 on a successful
+                 sign-in harmless: a duplicate /auth/google/callback hit reusing an
+                 already-consumed authorization code can redirect here with
+                 authError=1 even after an earlier request already completed
+                 sign-in - but by the time the browser follows that redirect, the
+                 session cookie is set, so "/" sends it straight to /inbox instead
+                 of rendering this banner. See
                  AuthTest.kt's testSuccessfulSignInHidesErrorBannerEvenWithStaleAuthErrorParam. -->
-            <#if authError??>
+            <#if authError!false>
                 <p class="banner-error">Couldn't sign you in - either something went wrong, or that
                     Google account isn't allowed to use this app.</p>
             </#if>
