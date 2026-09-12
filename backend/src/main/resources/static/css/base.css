@@ -60,3 +60,22 @@ body {
     color: #666;
     font-size: 0.875rem;
 }
+
+.message-summary {
+    margin: 0.5rem 0 0;
+}
+
+.action-items {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.action-due {
+    color: #666;
+    font-size: 0.875rem;
+}
+
+.inbox-scope {
+    color: #666;
+    font-size: 0.875rem;
+}

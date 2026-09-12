@@ -16,9 +16,11 @@ items — shared with my wife, not just me.
 - **Email ingestion**: pull mail from my inbox, either periodically (polling)
   or on-demand when the app is opened.
 - **Sender filtering**: only process email from known school senders
-  (teacher, school office, PTA, district newsletter, etc.).
-- **AI extraction**: send filtered emails to Gemini to pull out structured
-  data — dates, deadlines, action items, event details.
+  (teacher, school office, PTA, district newsletter, etc.) — configurable
+  via `SCHOOL_SENDERS`, scanning only the last `LOOKBACK_WEEKS` of mail
+  rather than the whole inbox.
+- **AI extraction**: send filtered emails to Gemini to pull out a summary
+  and action items — including dates and times when the email states one.
 - **Calendar organization**: turn extracted items into a calendar view.
 - **Calendar invites**: possibly auto-generate calendar invites/events from
   the extracted items.
@@ -41,8 +43,6 @@ they firm up.
 
 - How "periodic" pulling would run (background job vs. purely on-open) —
   the inbox view currently only pulls on-demand, when the page loads.
-- How senders are configured (manual allowlist vs. some learned/suggested
-  list).
 - Whether calendar integration targets Google Calendar directly or an
   in-app calendar with optional export/sync.
 - How much human review happens between AI extraction and calendar
@@ -50,6 +50,10 @@ they firm up.
 
 ## Status
 
-Email ingestion, using the Gmail API. Google sign-in works end to end
-(gated to an allowlist of two accounts), and a basic inbox view proves the
-Gmail pull itself works — no sender filtering or AI extraction yet.
+The main flow works end to end: Google sign-in (gated to an allowlist of
+two accounts), then `/inbox` scans the last `LOOKBACK_WEEKS` of email from
+`SCHOOL_SENDERS`-configured senders only (never the whole inbox), and runs
+each match through Gemini to show a summary and action items — with dates
+and times when the email states them. No calendar view/export yet, and no
+human-review step before extraction is shown (there's nothing to
+auto-create yet, so nothing to review).

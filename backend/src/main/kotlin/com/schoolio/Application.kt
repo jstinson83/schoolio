@@ -34,9 +34,7 @@ private val firestoreClient: Firestore by lazy {
 }
 
 // Shared by the Google OAuth/userinfo calls and Gmail API calls - all fast,
-// low-volume requests (unlike foodie's separate geminiHttpClient, which
-// needs a much longer timeout for image+JSON generation), so one client with
-// CIO's default timeouts covers both.
+// low-volume requests, so one client with CIO's default timeouts covers both.
 private val oauthHttpClient: HttpClient by lazy {
     HttpClient(CIO) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -45,13 +43,37 @@ private val oauthHttpClient: HttpClient by lazy {
     }
 }
 
+// Separate from oauthHttpClient, same as foodie's own geminiHttpClient -
+// Gemini generation can take noticeably longer than the fast OAuth/Gmail
+// calls above, so it gets its own longer timeout rather than making every
+// client share it.
+private val geminiHttpClient: HttpClient by lazy {
+    HttpClient(CIO) {
+        install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
+        engine {
+            endpoint {
+                requestTimeout = 60_000
+            }
+        }
+    }
+}
+
 fun Application.module(
     userStore: UserRepository = FirestoreUserStore(firestoreClient),
     gmailClient: GmailClient = RestGmailClient(oauthHttpClient),
+    geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
     oauthClient: HttpClient = oauthHttpClient,
     oauthRedirectBaseUrl: String = System.getenv("OAUTH_REDIRECT_BASE_URL") ?: "http://localhost:8080",
     sessionSecret: String = System.getenv("SESSION_SECRET") ?: "dev-insecure-session-secret",
-    allowedEmails: Set<String> = parseAllowedEmails(System.getenv("ALLOWED_EMAILS"))
+    allowedEmails: Set<String> = parseAllowedEmails(System.getenv("ALLOWED_EMAILS")),
+    // How far back and who to scan - see README's "I don't want to pull all
+    // my email" framing. Defaults to 4 weeks when unset; SCHOOL_SENDERS has
+    // no fallback (empty means unconfigured, not "match everything") - see
+    // parseSchoolSenders' doc comment.
+    schoolSenders: List<String> = parseSchoolSenders(System.getenv("SCHOOL_SENDERS")),
+    lookbackWeeks: Int = System.getenv("LOOKBACK_WEEKS")?.toIntOrNull() ?: 4
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
@@ -77,7 +99,7 @@ fun Application.module(
         authRoutes(oauthClient, userStore, allowedEmails)
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
-            inboxRoutes(userStore, gmailClient)
+            inboxRoutes(userStore, gmailClient, geminiClient, schoolSenders, lookbackWeeks)
         }
     }
 }

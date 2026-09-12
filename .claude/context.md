@@ -39,7 +39,19 @@ Worth checking there for precedent before inventing a new pattern here.
   plan, same shape as `foodie`, just without a JS framework on top.
 - **AI**: Gemini API, for extracting structured data (dates, deadlines,
   action items, event details) from filtered school emails — same role
-  Gemini plays in `foodie` for recipe/grocery-item parsing.
+  Gemini plays in `foodie` for recipe/grocery-item parsing. Implemented as
+  `RestGeminiClient` (`GeminiClient.kt`) — plain REST calls against
+  `generativelanguage.googleapis.com`'s `generateContent` endpoint (same
+  no-SDK convention as `GmailClient`/`GoogleAuthFlow`), using
+  `generationConfig.responseSchema` to force a JSON response shaped like
+  `{summary, actionItems: [{description, dueDate?, dueTime?}]}` rather than
+  parsing free-form prose. `dueDate`/`dueTime` are separate optional
+  ISO-8601 fields (not one combined timestamp) since emails often state
+  only a date. Runs on its own `geminiHttpClient` (longer request timeout
+  than the shared OAuth/Gmail client) — same split as `foodie`'s own
+  Gemini client. Model is configurable (`GEMINI_MODEL`, defaults to
+  `gemini-2.5-flash`); no response caching, same "low volume, not worth it
+  yet" reasoning as the Gmail token refresh.
 - **Auth**: Google sign-in, implemented. Same pattern as `foodie`
   (Ktor's built-in OAuth2 provider, signed session cookie via
   `SessionTransportTransformerMessageAuthentication`) rather than
@@ -78,19 +90,29 @@ Worth checking there for precedent before inventing a new pattern here.
   cached — pulls are infrequent (on app open, or periodically — still an
   open question below), so there's no hot path worth caching a ~1-hour
   token for yet.
-  - `GET /inbox` (`InboxRoutes.kt`) is the current proof-of-pull: lists the
-    signed-in user's most recent messages (subject/from/date, via
-    `format=metadata` so full bodies aren't downloaded just to list
-    headers) with **no sender filtering yet** — that's still open, see
-    below. Prompts to "sign in again" if no refresh token is stored yet
+  - `GET /inbox` (`InboxRoutes.kt`) is now the app's main flow, not just a
+    proof-of-pull: `RestGmailClient.searchMessages` scopes the Gmail
+    `messages.list` call server-side with a `q=after:<epoch> (from:a OR
+    from:b OR ...)` query — never an unfiltered inbox pull, see README's "I
+    don't want to pull all my email" framing — then fetches each match with
+    `format=full` (not `metadata`) since Gemini needs body text, not just
+    headers. Body extraction walks the MIME `parts` tree for a `text/plain`
+    part (base64url-decoded), falling back to Gmail's own `snippet` field
+    for the rare message with none. Each result is run through
+    `GeminiClient.extract` and rendered with its summary + action items.
+    Still prompts to "sign in again" if no refresh token is stored yet
     (shouldn't normally happen given `prompt=consent` above, but the route
-    handles it rather than crashing).
+    handles it rather than crashing) — and now also shows a distinct
+    "configure `SCHOOL_SENDERS`" state when no senders are configured at
+    all, checked *before* ever calling Gmail.
+  - Not paginated — a single `messages.list` call (Gmail's default page
+    size) is assumed to cover a household's few-weeks/few-senders volume;
+    worth revisiting if that assumption ever breaks.
 
 ## Not yet decided / open questions
 
 - How periodic email pulling runs (background job vs. purely on-open) —
   `GET /inbox` currently only pulls on-demand, when the page is loaded.
-- How school senders are configured (manual allowlist vs. suggested list).
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
@@ -104,7 +126,8 @@ Worth checking there for precedent before inventing a new pattern here.
   far: `GET /` (`splash.ftl` — deploy-confirmation revision display, plus
   sign-in/sign-out), `GET /auth/google` + `GET /auth/google/callback` +
   `POST /logout` (`Auth.kt`), `GET /inbox` (`InboxRoutes.kt`, gated behind
-  `authenticate(USER_SESSION_PROVIDER_NAME)`).
+  `authenticate(USER_SESSION_PROVIDER_NAME)` — the main scan-and-extract
+  flow, see above).
 - **Env vars** (Cloud Run + local `.env`/shell, not committed): 
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (a *new* OAuth 2.0 Client ID
   under the shared `foodie-503510` project — not foodie's own client, since
@@ -115,7 +138,13 @@ Worth checking there for precedent before inventing a new pattern here.
   `http://localhost:8080` locally), `ALLOWED_EMAILS` (comma-separated,
   gates sign-in itself — see the Shared state/sign-in gating decision
   above), `FIRESTORE_DATABASE_ID` (defaults to `"schoolio"` if unset — see
-  below).
+  below), `SCHOOL_SENDERS` (comma-separated sender addresses/domains that
+  `/inbox` scans — no fallback, unset/empty means "not configured yet", a
+  state `/inbox` shows distinctly rather than treating as zero senders
+  found), `LOOKBACK_WEEKS` (how far back `/inbox` searches; defaults to
+  `4`), `GEMINI_API_KEY` (required for `RestGeminiClient` to authenticate
+  against `generativelanguage.googleapis.com`), `GEMINI_MODEL` (defaults to
+  `gemini-2.5-flash`).
 - **Firestore database**: not created yet. Must be a *new* database under
   the shared `foodie-503510` project, distinct from `foodie`'s
   `foodie-nne1` — planned id `schoolio` (or `schoolio-nne1` to mirror
