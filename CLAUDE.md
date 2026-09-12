@@ -74,6 +74,21 @@ hit the same way.
   has to be clicked through (Advanced → Go to Schoolio), and only accounts
   added as test users on that consent screen can sign in at all — separate
   from, and in addition to, this app's own `ALLOWED_EMAILS` gate.
+  - **Refresh tokens issued while in "Testing" status reportedly expire
+    after 7 days** (Google policy on Testing-status apps, not something
+    this repo has independently confirmed yet - verify empirically by
+    checking whether a week-old stored `googleRefreshToken` still works).
+    This directly undercuts unattended periodic Gmail pulling: a stored
+    token will stop working roughly weekly unless that user signs in
+    again. Fine as long as pulling only ever happens on app-open (the
+    user showing up re-triggers sign-in naturally); a real background/cron
+    pull would hit this within a week of the last sign-in. Getting
+    long-lived tokens means publishing to "In production," which for a
+    restricted scope requires Google's verification process regardless of
+    how few users the app has - almost certainly not worth it for two
+    accounts. See the "How periodic email pulling runs" open question in
+    `context.md` - this is a real constraint on that decision, not just a
+    hypothetical.
 - **`extraAuthParameters = access_type=offline, prompt=consent`** on the
   OAuth provider (`GoogleAuthFlow.kt`) is what makes Google actually return
   a `refresh_token` on every sign-in, not just the first — without
