@@ -8,6 +8,6 @@ alone. See `context.md` for the stable project overview instead.
 
 ## Active task
 
-None currently — project is in early planning. `README.md` captures the
-initial scope; `context.md` captures the architecture decisions made so
-far. No sprint plan has been laid out yet.
+None currently — the last sprint (pull/process debounce, first-class
+action items, watermark-based rescanning) is done; see `context.md`'s
+"Message pull/processing pipeline" section for what landed.

@@ -4,6 +4,8 @@ import com.icegreen.greenmail.util.GreenMail
 import com.icegreen.greenmail.util.GreenMailUtil
 import com.icegreen.greenmail.util.ServerSetupTest
 import kotlinx.coroutines.runBlocking
+import java.time.Duration
+import java.time.Instant
 import kotlin.test.*
 
 // Exercises ImapGmailClient's actual IMAP protocol handling against GreenMail
@@ -25,6 +27,8 @@ class ImapGmailClientTest {
     private fun clientFor(greenMail: GreenMail): ImapGmailClient =
         ImapGmailClient(host = "localhost", port = greenMail.imap.serverSetup.port, protocol = "imap")
 
+    private fun fourWeeksAgo(): Instant = Instant.now().minus(Duration.ofDays(28))
+
     @Test
     fun testSearchMessagesFindsMatchingSenderAndPlainTextBody() = runBlocking {
         val greenMail = startGreenMail()
@@ -35,7 +39,7 @@ class ImapGmailClientTest {
             )
             greenMail.waitForIncomingEmail(1)
 
-            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), sinceWeeks = 4)
+            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), since = fourWeeksAgo())
 
             assertEquals(1, messages.size)
             assertEquals("Field trip permission slip", messages[0].subject)
@@ -54,7 +58,7 @@ class ImapGmailClientTest {
             GreenMailUtil.sendTextEmail(TEST_EMAIL, "newsletter@random.example", "Unrelated newsletter", "Not school", greenMail.smtp.serverSetup)
             greenMail.waitForIncomingEmail(2)
 
-            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), sinceWeeks = 4)
+            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), since = fourWeeksAgo())
 
             assertEquals(1, messages.size)
             assertEquals("From the teacher", messages[0].subject)
@@ -67,7 +71,7 @@ class ImapGmailClientTest {
     fun testSearchMessagesReturnsEmptyWhenMailboxHasNoMatches() = runBlocking {
         val greenMail = startGreenMail()
         try {
-            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), sinceWeeks = 4)
+            val messages = clientFor(greenMail).searchMessages(TEST_EMAIL, "app-password", listOf(TEST_SENDER), since = fourWeeksAgo())
             assertEquals(emptyList(), messages)
         } finally {
             greenMail.stop()

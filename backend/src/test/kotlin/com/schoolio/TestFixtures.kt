@@ -9,7 +9,9 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.testing.*
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
+import java.time.Instant
 
 // Shared fakes/helpers for AuthTest and InboxTest, mirroring foodie's
 // TestFixtures.kt shape (one file, grouped by what's faked rather than by
@@ -47,14 +49,14 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
         private set
     var lastSendersUsed: List<String>? = null
         private set
-    var lastSinceWeeksUsed: Int? = null
+    var lastSinceUsed: Instant? = null
         private set
 
-    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> {
+    override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, since: Instant): List<GmailMessage> {
         lastEmailUsed = email
         lastAppPasswordUsed = appPassword
         lastSendersUsed = senders
-        lastSinceWeeksUsed = sinceWeeks
+        lastSinceUsed = since
         return messages
     }
 }
@@ -72,6 +74,49 @@ class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SE
     }
 }
 
+// In-memory stand-in for MessageStore.kt's Firestore implementation - a plain
+// map keyed by id gives storeIfAbsent's dedupe semantics for free via
+// putIfAbsent.
+class FakeMessageRepository : MessageRepository {
+    private val messages = mutableMapOf<String, EmailMessage>()
+
+    override suspend fun getAll(): List<EmailMessage> = messages.values.sortedByDescending { it.receivedAt }
+    override suspend fun getPending(): List<EmailMessage> = messages.values.filter { it.status == MessageStatus.PENDING }
+
+    override suspend fun storeIfAbsent(message: EmailMessage) {
+        messages.putIfAbsent(message.id, message)
+    }
+
+    override suspend fun markProcessed(id: String, summary: String) {
+        messages[id]?.let { messages[id] = it.copy(status = MessageStatus.PROCESSED, summary = summary, failureReason = null) }
+    }
+
+    override suspend fun markFailed(id: String, reason: String) {
+        messages[id]?.let { messages[id] = it.copy(status = MessageStatus.FAILED, failureReason = reason) }
+    }
+}
+
+class FakeActionItemRepository : ActionItemRepository {
+    val items = mutableListOf<ActionItem>()
+
+    override suspend fun getAll(): List<ActionItem> = items.toList()
+
+    override suspend fun addAll(items: List<ActionItem>) {
+        this.items.addAll(items)
+    }
+}
+
+class FakeScanStateRepository(initial: Map<String, Instant> = emptyMap()) : ScanStateRepository {
+    private val watermarks = initial.toMutableMap()
+
+    override suspend fun getWatermarks(): Map<String, Instant> = watermarks.toMap()
+
+    override suspend fun recordSeen(sender: String, at: Instant) {
+        val existing = watermarks[sender]
+        if (existing == null || at.isAfter(existing)) watermarks[sender] = at
+    }
+}
+
 // Returns the same fixed extraction for every message - InboxTest only
 // needs to prove the extraction reaches the page, not exercise prompt
 // content (that's RestGeminiClient's own job, and it never touches Gemini
@@ -79,7 +124,7 @@ class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SE
 class FakeGeminiClient(
     private val extraction: EmailExtraction = EmailExtraction(
         summary = "Fake summary",
-        actionItems = listOf(ActionItem("Sign and return the form", dueDate = "2026-09-19"))
+        actionItems = listOf(ExtractedActionItem(title = "Sign and return the form", description = "Sign and return the form", dueDate = "2026-09-19"))
     )
 ) : GeminiClient {
     val extractedSubjects = mutableListOf<String>()
@@ -88,6 +133,30 @@ class FakeGeminiClient(
         extractedSubjects.add(subject)
         return extraction
     }
+}
+
+// Polls messageStore (same shape as foodie's awaitEditResolved) until every
+// message has left PENDING - the debounced processing pass runs on
+// Application.kt's module-level backgroundScope, a different coroutine
+// context than the test itself, so a test can't just assume it's done the
+// moment its triggering request (GET /inbox) returns.
+suspend fun awaitMessagesProcessed(messageStore: MessageRepository) {
+    repeat(100) {
+        if (messageStore.getPending().isEmpty()) return
+        delay(20)
+    }
+    error("Messages never finished processing")
+}
+
+// Same polling shape as awaitMessagesProcessed, for a test that specifically
+// needs to observe a message reach FAILED (which getPending() alone can't
+// distinguish from PROCESSED, since both leave PENDING).
+suspend fun awaitMessageStatus(messageStore: MessageRepository, id: String, status: MessageStatus) {
+    repeat(100) {
+        if (messageStore.getAll().find { it.id == id }?.status == status) return
+        delay(20)
+    }
+    error("Message $id never reached status $status")
 }
 
 // Stands in for Google's OAuth token/userinfo endpoints, same shape as
@@ -133,7 +202,14 @@ fun ApplicationTestBuilder.testModule(
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
     allowedEmails: Set<String> = setOf(TEST_EMAIL),
-    settingsStore: SettingsRepository = FakeSettingsRepository()
+    settingsStore: SettingsRepository = FakeSettingsRepository(),
+    messageStore: MessageRepository = FakeMessageRepository(),
+    actionItemStore: ActionItemRepository = FakeActionItemRepository(),
+    scanStateStore: ScanStateRepository = FakeScanStateRepository(),
+    // Most tests want processing to happen practically immediately rather
+    // than waiting out the real production debounce - see
+    // awaitMessagesProcessed's doc comment for how a test then observes it.
+    inboxProcessDebounceMs: Long = 10L
 ) {
     application {
         module(
@@ -144,7 +220,11 @@ fun ApplicationTestBuilder.testModule(
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
             allowedEmails = allowedEmails,
-            settingsStore = settingsStore
+            settingsStore = settingsStore,
+            messageStore = messageStore,
+            actionItemStore = actionItemStore,
+            scanStateStore = scanStateStore,
+            inboxProcessDebounceMs = inboxProcessDebounceMs
         )
     }
 }

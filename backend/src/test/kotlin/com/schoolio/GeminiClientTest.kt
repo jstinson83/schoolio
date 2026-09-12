@@ -33,7 +33,7 @@ class GeminiClientTest {
                     "candidates": [{
                         "content": {
                             "parts": [{
-                                "text": "{\"summary\":\"Permission slip needs a signature.\",\"actionItems\":[{\"description\":\"Sign and return the form\",\"dueDate\":\"2026-09-19\",\"dueTime\":\"09:00\"}]}"
+                                "text": "{\"summary\":\"Permission slip needs a signature.\",\"actionItems\":[{\"title\":\"Sign permission slip\",\"description\":\"Sign and return the form\",\"dueDate\":\"2026-09-19\",\"dueTime\":\"09:00\"}]}"
                             }]
                         }
                     }]
@@ -49,6 +49,7 @@ class GeminiClientTest {
         assertEquals("fake-api-key", sawApiKey)
         assertEquals("Permission slip needs a signature.", extraction.summary)
         assertEquals(1, extraction.actionItems.size)
+        assertEquals("Sign permission slip", extraction.actionItems[0].title)
         assertEquals("Sign and return the form", extraction.actionItems[0].description)
         assertEquals("2026-09-19", extraction.actionItems[0].dueDate)
         assertEquals("09:00", extraction.actionItems[0].dueTime)
