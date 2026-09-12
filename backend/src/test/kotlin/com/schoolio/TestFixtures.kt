@@ -18,6 +18,7 @@ import kotlinx.serialization.json.Json
 const val TEST_SUB = "test-sub"
 const val TEST_EMAIL = "test@example.com"
 const val TEST_NAME = "Test User"
+const val TEST_SENDER = "teacher@school.example"
 
 class FakeUserRepository : UserRepository {
     val created = mutableListOf<User>()
@@ -39,13 +40,50 @@ class FakeUserRepository : UserRepository {
     }
 }
 
-class FakeGmailClient(private val messages: List<GmailMessageSummary> = emptyList()) : GmailClient {
+class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {
     var lastRefreshTokenUsed: String? = null
         private set
+    var lastSendersUsed: List<String>? = null
+        private set
+    var lastSinceWeeksUsed: Int? = null
+        private set
 
-    override suspend fun listRecentMessages(refreshToken: String, maxResults: Int): List<GmailMessageSummary> {
+    override suspend fun searchMessages(refreshToken: String, senders: List<String>, sinceWeeks: Int): List<GmailMessage> {
         lastRefreshTokenUsed = refreshToken
+        lastSendersUsed = senders
+        lastSinceWeeksUsed = sinceWeeks
         return messages
+    }
+}
+
+class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SENDER), 4)) : SettingsRepository {
+    var current: ScanSettings = initial
+        private set
+    val saved = mutableListOf<ScanSettings>()
+
+    override suspend fun get(): ScanSettings = current
+
+    override suspend fun save(settings: ScanSettings) {
+        current = settings
+        saved.add(settings)
+    }
+}
+
+// Returns the same fixed extraction for every message - InboxTest only
+// needs to prove the extraction reaches the page, not exercise prompt
+// content (that's RestGeminiClient's own job, and it never touches Gemini
+// for real in tests - see GeminiClientTest).
+class FakeGeminiClient(
+    private val extraction: EmailExtraction = EmailExtraction(
+        summary = "Fake summary",
+        actionItems = listOf(ActionItem("Sign and return the form", dueDate = "2026-09-19"))
+    )
+) : GeminiClient {
+    val extractedSubjects = mutableListOf<String>()
+
+    override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
+        extractedSubjects.add(subject)
+        return extraction
     }
 }
 
@@ -91,19 +129,23 @@ fun fakeGoogleOAuthClient(
 fun ApplicationTestBuilder.testModule(
     userStore: UserRepository = FakeUserRepository(),
     gmailClient: GmailClient = FakeGmailClient(),
+    geminiClient: GeminiClient = FakeGeminiClient(),
     oauthClient: HttpClient = fakeGoogleOAuthClient(),
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
-    allowedEmails: Set<String> = setOf(TEST_EMAIL)
+    allowedEmails: Set<String> = setOf(TEST_EMAIL),
+    settingsStore: SettingsRepository = FakeSettingsRepository()
 ) {
     application {
         module(
             userStore = userStore,
             gmailClient = gmailClient,
+            geminiClient = geminiClient,
             oauthClient = oauthClient,
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
-            allowedEmails = allowedEmails
+            allowedEmails = allowedEmails,
+            settingsStore = settingsStore
         )
     }
 }

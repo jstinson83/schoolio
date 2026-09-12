@@ -34,9 +34,7 @@ private val firestoreClient: Firestore by lazy {
 }
 
 // Shared by the Google OAuth/userinfo calls and Gmail API calls - all fast,
-// low-volume requests (unlike foodie's separate geminiHttpClient, which
-// needs a much longer timeout for image+JSON generation), so one client with
-// CIO's default timeouts covers both.
+// low-volume requests, so one client with CIO's default timeouts covers both.
 private val oauthHttpClient: HttpClient by lazy {
     HttpClient(CIO) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -45,13 +43,43 @@ private val oauthHttpClient: HttpClient by lazy {
     }
 }
 
+// Separate from oauthHttpClient, same as foodie's own geminiHttpClient -
+// Gemini generation can take noticeably longer than the fast OAuth/Gmail
+// calls above, so it gets its own longer timeout rather than making every
+// client share it. 120s matches foodie's documented value (CIO's 15s
+// default is too short for Gemini's generation time).
+private val geminiHttpClient: HttpClient by lazy {
+    HttpClient(CIO) {
+        install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
+        engine {
+            endpoint {
+                requestTimeout = 120_000
+            }
+        }
+    }
+}
+
 fun Application.module(
     userStore: UserRepository = FirestoreUserStore(firestoreClient),
     gmailClient: GmailClient = RestGmailClient(oauthHttpClient),
+    geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
     oauthClient: HttpClient = oauthHttpClient,
     oauthRedirectBaseUrl: String = System.getenv("OAUTH_REDIRECT_BASE_URL") ?: "http://localhost:8080",
     sessionSecret: String = System.getenv("SESSION_SECRET") ?: "dev-insecure-session-secret",
-    allowedEmails: Set<String> = parseAllowedEmails(System.getenv("ALLOWED_EMAILS"))
+    allowedEmails: Set<String> = parseAllowedEmails(System.getenv("ALLOWED_EMAILS")),
+    // Seeds Firestore's settings doc only until someone saves real values via
+    // the /inbox settings form (see SettingsStore.kt) - not read again after
+    // that, so these env vars only matter for a fresh deploy nobody's
+    // configured yet. SCHOOL_SENDERS has no fallback (empty means
+    // unconfigured, not "match everything") - see parseSchoolSenders' doc
+    // comment.
+    settingsStore: SettingsRepository = FirestoreSettingsStore(
+        firestoreClient,
+        parseSchoolSenders(System.getenv("SCHOOL_SENDERS")),
+        System.getenv("LOOKBACK_WEEKS")?.toIntOrNull() ?: 4
+    )
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
@@ -77,7 +105,7 @@ fun Application.module(
         authRoutes(oauthClient, userStore, allowedEmails)
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
-            inboxRoutes(userStore, gmailClient)
+            inboxRoutes(userStore, gmailClient, geminiClient, settingsStore)
         }
     }
 }
