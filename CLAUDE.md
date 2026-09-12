@@ -56,6 +56,21 @@ Cloud Build specifics, Firestore composite-index gotchas, Gemini
 prompt/response quirks) before re-deriving something Schoolio is likely to
 hit the same way.
 
+- **A Firestore date field read back through a raw `doc.get(field)`/
+  `doc.data` map comes back as `com.google.cloud.Timestamp`, not
+  `java.util.Date`** — only the typed `DocumentSnapshot.getDate(fieldName)`
+  accessor (`MessageStore.kt`'s `receivedAt`) does that conversion for you.
+  `ScanStateStore.kt`'s `bySender` array-of-maps used to hard-cast each
+  entry's `seenAt` to `Date` after reading the whole array via the raw
+  `List<Map<String, Any?>>` cast - worked in every test (`FakeScanStateRepository`
+  is a plain in-memory map, so it never touches a real Firestore response
+  shape) but threw a `ClassCastException` in production on every watermark
+  read once a sender had ever been scanned. `UserStore.kt`'s `createdAt`
+  already got this right (cast to `Timestamp`, then
+  `Instant.ofEpochSecond(it.seconds, it.nanos.toLong())`) - `ScanStateStore.kt`
+  now does the same (`toFirestoreInstant()`). If a future field is read via a
+  raw map/array cast instead of a typed accessor, assume it needs the same
+  treatment rather than `as Date`.
 - **Local `./gradlew run` crashes at startup without Google Cloud
   credentials.** `FirestoreUserStore`'s Firestore client is a default
   constructor argument (`module()`'s `userStore` param), so it's built

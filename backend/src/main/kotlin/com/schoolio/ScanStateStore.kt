@@ -1,5 +1,6 @@
 package com.schoolio
 
+import com.google.cloud.Timestamp
 import com.google.cloud.firestore.Firestore
 import java.time.Instant
 import java.util.Date
@@ -36,7 +37,7 @@ class FirestoreScanStateStore(private val firestore: Firestore) : ScanStateRepos
         if (!doc.exists()) return emptyMap()
         @Suppress("UNCHECKED_CAST")
         val entries = doc.get("bySender") as? List<Map<String, Any?>> ?: return emptyMap()
-        return entries.associate { (it["sender"] as String) to (it["seenAt"] as Date).toInstant() }
+        return entries.associate { (it["sender"] as String) to it["seenAt"].toFirestoreInstant() }
     }
 
     override suspend fun recordSeen(sender: String, at: Instant) {
@@ -45,11 +46,27 @@ class FirestoreScanStateStore(private val firestore: Firestore) : ScanStateRepos
             @Suppress("UNCHECKED_CAST")
             val entries = (doc.get("bySender") as? List<Map<String, Any?>>)?.toMutableList() ?: mutableListOf()
             val index = entries.indexOfFirst { it["sender"] == sender }
-            val existingAt = (entries.getOrNull(index)?.get("seenAt") as? Date)?.toInstant()
+            val existingAt = entries.getOrNull(index)?.get("seenAt")?.toFirestoreInstant()
             if (existingAt != null && !at.isAfter(existingAt)) return@runTransaction
             val entry = mapOf("sender" to sender, "seenAt" to Date.from(at))
             if (index >= 0) entries[index] = entry else entries.add(entry)
             txn.set(docRef, mapOf("bySender" to entries))
         }.get()
     }
+}
+
+// A date value read back through a raw doc.get()/document-data map (as
+// opposed to the typed DocumentSnapshot.getDate(fieldName) accessor, see
+// MessageStore.kt) comes back as a com.google.cloud.Timestamp, not a
+// java.util.Date - the client library only does that conversion for the
+// typed accessor. bySender's entries are read via the raw List<Map> cast
+// above, so seenAt hits this case; same reasoning as UserStore.kt's
+// createdAt. Date is still accepted so this doesn't break on some
+// already-existing doc written before this fix (shouldn't happen in
+// practice, since every write path here goes through Firestore, but cheap
+// to allow both).
+private fun Any?.toFirestoreInstant(): Instant = when (this) {
+    is Timestamp -> Instant.ofEpochSecond(seconds, nanos.toLong())
+    is Date -> toInstant()
+    else -> error("Expected a Timestamp or Date for seenAt, got $this")
 }
