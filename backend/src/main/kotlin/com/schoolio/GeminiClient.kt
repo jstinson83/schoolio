@@ -77,7 +77,13 @@ private val extractionSchema = buildJsonObject {
 class RestGeminiClient(
     private val httpClient: HttpClient,
     private val apiKey: String = System.getenv("GEMINI_API_KEY") ?: "",
-    private val model: String = System.getenv("GEMINI_MODEL") ?: "gemini-2.5-flash"
+    // Matches foodie's current model (see foodie's CLAUDE.md "Gemini
+    // integration gotchas" - names churn on Google's release schedule, 1.5
+    // and 2.0 Flash are both already retired as of mid-2026, so this is
+    // liable to need bumping again; check
+    // https://ai.google.dev/gemini-api/docs/models for the current GA flash
+    // model if this starts 404ing).
+    private val model: String = System.getenv("GEMINI_MODEL") ?: "gemini-3.6-flash"
 ) : GeminiClient {
     override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
         val prompt = """
@@ -107,10 +113,19 @@ class RestGeminiClient(
 
         val text = response.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text
             ?: return EmailExtraction(summary = "", actionItems = emptyList())
-        val payload = Json { ignoreUnknownKeys = true }.decodeFromString<ExtractionPayload>(text)
+        val payload = Json { ignoreUnknownKeys = true }.decodeFromString<ExtractionPayload>(stripJsonFence(text))
         return EmailExtraction(
             summary = payload.summary,
             actionItems = payload.actionItems.map { ActionItem(it.description, it.dueDate, it.dueTime) }
         )
     }
+
+    // Gemini sometimes wraps its JSON response in a markdown code fence even
+    // with responseMimeType=application/json set - same quirk foodie's
+    // RecipeParser.kt works around, verified against a live response there.
+    private fun stripJsonFence(rawText: String): String = rawText.trim()
+        .removePrefix("```json")
+        .removePrefix("```")
+        .removeSuffix("```")
+        .trim()
 }

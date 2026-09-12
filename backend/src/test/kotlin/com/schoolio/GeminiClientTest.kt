@@ -76,4 +76,29 @@ class GeminiClientTest {
         assertEquals("Monthly newsletter, nothing to act on.", extraction.summary)
         assertEquals(emptyList(), extraction.actionItems)
     }
+
+    @Test
+    fun testExtractStripsMarkdownCodeFenceAroundJsonResponse() = runBlocking {
+        // Gemini sometimes wraps its response in a ```json fence even with
+        // responseMimeType=application/json set - same quirk foodie's
+        // RecipeParser.kt works around (see GeminiClient.kt's stripJsonFence).
+        val httpClient = mockClient {
+            respond(
+                """{
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": "```json\n{\"summary\":\"Fenced response.\",\"actionItems\":[]}\n```"}]
+                        }
+                    }]
+                }""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            )
+        }
+
+        val extraction = RestGeminiClient(httpClient, apiKey = "fake-api-key")
+            .extract("PTA Newsletter", "pta@school.example", "Here's what's happening this month...")
+
+        assertEquals("Fenced response.", extraction.summary)
+    }
 }

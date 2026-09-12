@@ -56,6 +56,19 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
     }
 }
 
+class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SENDER), 4)) : SettingsRepository {
+    var current: ScanSettings = initial
+        private set
+    val saved = mutableListOf<ScanSettings>()
+
+    override suspend fun get(): ScanSettings = current
+
+    override suspend fun save(settings: ScanSettings) {
+        current = settings
+        saved.add(settings)
+    }
+}
+
 // Returns the same fixed extraction for every message - InboxTest only
 // needs to prove the extraction reaches the page, not exercise prompt
 // content (that's RestGeminiClient's own job, and it never touches Gemini
@@ -121,8 +134,7 @@ fun ApplicationTestBuilder.testModule(
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
     allowedEmails: Set<String> = setOf(TEST_EMAIL),
-    schoolSenders: List<String> = listOf(TEST_SENDER),
-    lookbackWeeks: Int = 4
+    settingsStore: SettingsRepository = FakeSettingsRepository()
 ) {
     application {
         module(
@@ -133,8 +145,7 @@ fun ApplicationTestBuilder.testModule(
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
             allowedEmails = allowedEmails,
-            schoolSenders = schoolSenders,
-            lookbackWeeks = lookbackWeeks
+            settingsStore = settingsStore
         )
     }
 }

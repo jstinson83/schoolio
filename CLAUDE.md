@@ -97,3 +97,20 @@ hit the same way.
   (parenthesized deliberately - FreeMarker's `!`/`??` precedence when
   mixed is easy to get wrong). See `testSuccessfulSignInHidesErrorBanner...`
   in `AuthTest.kt` for the regression test.
+- **Gemini model names churn on Google's release schedule, same as
+  `foodie`** — 1.5 and 2.0 Flash are both already retired as of mid-2026,
+  and this project's own first pass at `GeminiClient.kt` shipped with
+  `gemini-2.5-flash` (copied from general knowledge, not checked against
+  `foodie`) before being corrected to match `foodie`'s actual
+  `gemini-3.6-flash`. If `/inbox`'s Gemini call starts 404ing, check
+  `foodie`'s `RecipeParser.kt`/`GroceryItemParser.kt`/etc. for whatever
+  model they've since moved to (or
+  https://ai.google.dev/gemini-api/docs/models directly) rather than
+  guessing — `foodie` hits this churn more often (four call sites) and its
+  `.claude/context.md`/`CLAUDE.md` are kept current with the actual model
+  in use.
+- **Gemini sometimes wraps its JSON response in a ` ```json ... ``` `
+  code fence even with `responseMimeType: application/json` set** — same
+  quirk `foodie`'s `RecipeParser.kt` works around. `RestGeminiClient.extract`
+  strips it (`stripJsonFence`) before decoding; don't remove that without
+  re-verifying against a live response first.

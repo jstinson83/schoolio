@@ -79,3 +79,30 @@ body {
     color: #666;
     font-size: 0.875rem;
 }
+
+.settings-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 1rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    background: #f0f0ee;
+    border-radius: 0.5rem;
+}
+
+.settings-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.settings-form input[type="text"] {
+    width: 20rem;
+    max-width: 100%;
+}
+
+.settings-form input[type="number"] {
+    width: 5rem;
+}

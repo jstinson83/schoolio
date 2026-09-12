@@ -47,11 +47,16 @@ Worth checking there for precedent before inventing a new pattern here.
   `{summary, actionItems: [{description, dueDate?, dueTime?}]}` rather than
   parsing free-form prose. `dueDate`/`dueTime` are separate optional
   ISO-8601 fields (not one combined timestamp) since emails often state
-  only a date. Runs on its own `geminiHttpClient` (longer request timeout
-  than the shared OAuth/Gmail client) — same split as `foodie`'s own
-  Gemini client. Model is configurable (`GEMINI_MODEL`, defaults to
-  `gemini-2.5-flash`); no response caching, same "low volume, not worth it
-  yet" reasoning as the Gmail token refresh.
+  only a date. Runs on its own `geminiHttpClient` (120s request timeout,
+  matching `foodie`'s documented value — Gemini generation routinely
+  exceeds CIO's 15s default). Model is configurable (`GEMINI_MODEL`,
+  defaults to `gemini-3.6-flash` — **check `foodie`'s current model before
+  trusting this default**, see CLAUDE.md's Gemini gotchas: names churn on
+  Google's release schedule and `foodie` hits it more often). Strips a
+  ` ```json ` code fence before decoding — same quirk `foodie`'s
+  `RecipeParser.kt` works around, Gemini sometimes adds one even with
+  `responseMimeType: application/json` set. No response caching, same "low
+  volume, not worth it yet" reasoning as the Gmail token refresh.
 - **Auth**: Google sign-in, implemented. Same pattern as `foodie`
   (Ktor's built-in OAuth2 provider, signed session cookie via
   `SessionTransportTransformerMessageAuthentication`) rather than
@@ -102,17 +107,36 @@ Worth checking there for precedent before inventing a new pattern here.
     `GeminiClient.extract` and rendered with its summary + action items.
     Still prompts to "sign in again" if no refresh token is stored yet
     (shouldn't normally happen given `prompt=consent` above, but the route
-    handles it rather than crashing) — and now also shows a distinct
-    "configure `SCHOOL_SENDERS`" state when no senders are configured at
-    all, checked *before* ever calling Gmail.
+    handles it rather than crashing) — and now also shows a distinct "no
+    senders configured" state when the sender list is empty, checked
+    *before* ever calling Gmail.
   - Not paginated — a single `messages.list` call (Gmail's default page
     size) is assumed to cover a household's few-weeks/few-senders volume;
     worth revisiting if that assumption ever breaks.
+- **Scan settings** (which senders, how many weeks back): stored in
+  Firestore (`SettingsRepository`/`FirestoreSettingsStore` in
+  `SettingsStore.kt`), one shared doc at `settings/scan` — not per-user,
+  same "two-person household, one shared view" reasoning as
+  `ALLOWED_EMAILS`/`User.id`. Editable via a form directly on `/inbox`
+  (`POST /inbox/settings`, redirect-after-post back to `GET /inbox` so the
+  redirected reload re-runs the scan with the new values). `SCHOOL_SENDERS`/
+  `LOOKBACK_WEEKS` env vars only seed the doc's *first* read, before anyone's
+  ever saved a value through the form — once saved, Firestore is the source
+  of truth and those env vars stop being read. `lookbackWeeks` is clamped to
+  1-52 on save regardless of what the form submits (a stray huge value would
+  turn into an equally huge Gmail `after:` window for no benefit). Explicit
+  maintainer decision: this data is scan configuration (sender addresses,
+  a number), not email content — a different privacy bar than the emails
+  themselves, so persisting it in Firestore was fine, unlike (say) caching
+  extracted email content, which isn't done anywhere yet.
 
 ## Not yet decided / open questions
 
 - How periodic email pulling runs (background job vs. purely on-open) —
-  `GET /inbox` currently only pulls on-demand, when the page is loaded.
+  `GET /inbox` currently only pulls on-demand, when the page is loaded (and
+  re-scans + re-runs Gemini on every visit — no caching/dedup of
+  already-seen messages yet, so revisiting the page re-spends a Gemini call
+  per matching message every time).
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
@@ -125,9 +149,10 @@ Worth checking there for precedent before inventing a new pattern here.
   `backend/src/main/resources/static/`, same layout as `foodie`. Routes so
   far: `GET /` (`splash.ftl` — deploy-confirmation revision display, plus
   sign-in/sign-out), `GET /auth/google` + `GET /auth/google/callback` +
-  `POST /logout` (`Auth.kt`), `GET /inbox` (`InboxRoutes.kt`, gated behind
+  `POST /logout` (`Auth.kt`), `GET /inbox` + `POST /inbox/settings`
+  (`InboxRoutes.kt`, both gated behind
   `authenticate(USER_SESSION_PROVIDER_NAME)` — the main scan-and-extract
-  flow, see above).
+  flow and its settings form, see above).
 - **Env vars** (Cloud Run + local `.env`/shell, not committed): 
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (a *new* OAuth 2.0 Client ID
   under the shared `foodie-503510` project — not foodie's own client, since
@@ -138,13 +163,13 @@ Worth checking there for precedent before inventing a new pattern here.
   `http://localhost:8080` locally), `ALLOWED_EMAILS` (comma-separated,
   gates sign-in itself — see the Shared state/sign-in gating decision
   above), `FIRESTORE_DATABASE_ID` (defaults to `"schoolio"` if unset — see
-  below), `SCHOOL_SENDERS` (comma-separated sender addresses/domains that
-  `/inbox` scans — no fallback, unset/empty means "not configured yet", a
-  state `/inbox` shows distinctly rather than treating as zero senders
-  found), `LOOKBACK_WEEKS` (how far back `/inbox` searches; defaults to
-  `4`), `GEMINI_API_KEY` (required for `RestGeminiClient` to authenticate
-  against `generativelanguage.googleapis.com`), `GEMINI_MODEL` (defaults to
-  `gemini-2.5-flash`).
+  below), `SCHOOL_SENDERS` / `LOOKBACK_WEEKS` (seed the Firestore scan
+  settings doc's first read only — see "Scan settings" above; once the
+  `/inbox` settings form is submitted once, edit the values there instead,
+  not these env vars), `GEMINI_API_KEY` (required for `RestGeminiClient` to
+  authenticate against `generativelanguage.googleapis.com`), `GEMINI_MODEL`
+  (defaults to `gemini-3.6-flash` — verify against `foodie`'s current model
+  first, see CLAUDE.md's Gemini gotchas).
 - **Firestore database**: not created yet. Must be a *new* database under
   the shared `foodie-503510` project, distinct from `foodie`'s
   `foodie-nne1` — planned id `schoolio` (or `schoolio-nne1` to mirror

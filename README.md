@@ -16,9 +16,10 @@ items — shared with my wife, not just me.
 - **Email ingestion**: pull mail from my inbox, either periodically (polling)
   or on-demand when the app is opened.
 - **Sender filtering**: only process email from known school senders
-  (teacher, school office, PTA, district newsletter, etc.) — configurable
-  via `SCHOOL_SENDERS`, scanning only the last `LOOKBACK_WEEKS` of mail
-  rather than the whole inbox.
+  (teacher, school office, PTA, district newsletter, etc.), scanning only
+  the last N weeks of mail rather than the whole inbox — both configurable
+  right on the `/inbox` page, shared between both accounts (stored in
+  Firestore, not per-user).
 - **AI extraction**: send filtered emails to Gemini to pull out a summary
   and action items — including dates and times when the email states one.
 - **Calendar organization**: turn extracted items into a calendar view.
@@ -51,9 +52,12 @@ they firm up.
 ## Status
 
 The main flow works end to end: Google sign-in (gated to an allowlist of
-two accounts), then `/inbox` scans the last `LOOKBACK_WEEKS` of email from
-`SCHOOL_SENDERS`-configured senders only (never the whole inbox), and runs
-each match through Gemini to show a summary and action items — with dates
-and times when the email states them. No calendar view/export yet, and no
-human-review step before extraction is shown (there's nothing to
-auto-create yet, so nothing to review).
+two accounts), then `/inbox` scans the last N weeks of email from a
+configured sender list only (never the whole inbox — both editable in a
+form right on the page) and runs each match through Gemini to show a
+summary and action items — with dates and times when the email states
+them. Nothing about the scan is persisted beyond that sender list/lookback
+setting itself: every visit to `/inbox` re-pulls from Gmail and re-runs
+Gemini fresh, with no caching or dedup of already-seen messages yet. No
+calendar view/export yet, and no human-review step before extraction is
+shown (there's nothing to auto-create yet, so nothing to review).
