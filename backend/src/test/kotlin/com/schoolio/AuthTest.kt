@@ -51,6 +51,35 @@ class AuthTest {
     }
 
     @Test
+    fun testDisallowedSignInShowsErrorBanner() = testApplication {
+        testModule(oauthClient = fakeGoogleOAuthClient(email = "not-allowed@example.com"), allowedEmails = setOf(TEST_EMAIL))
+        val client = createClient { install(HttpCookies); followRedirects = false }
+        val loginResponse = client.get("/auth/google")
+        val state = Url(loginResponse.headers[HttpHeaders.Location]!!).parameters["state"]!!
+
+        val callbackResponse = client.get("/auth/google/callback?code=fake-code&state=$state")
+        assertEquals("/?authError=1", callbackResponse.headers[HttpHeaders.Location])
+
+        assertTrue(client.get("/?authError=1").bodyAsText().contains("Couldn't sign you in"))
+    }
+
+    // Regression test for the real bug hit in production: a duplicate
+    // /auth/google/callback request (reusing an already-consumed
+    // authorization code) can redirect to /?authError=1 even after an
+    // earlier request already completed sign-in successfully - splash.ftl
+    // must not show the error banner once a real session exists, or a
+    // successful sign-in looks broken.
+    @Test
+    fun testSuccessfulSignInHidesErrorBannerEvenWithStaleAuthErrorParam() = testApplication {
+        testModule()
+        val client = signInFakeUser()
+
+        val page = client.get("/?authError=1")
+        assertTrue(page.bodyAsText().contains("Signed in as"))
+        assertFalse(page.bodyAsText().contains("Couldn't sign you in"))
+    }
+
+    @Test
     fun testUnauthenticatedPageRequestIsUnauthorized() = testApplication {
         testModule()
         val response = client.get("/inbox")

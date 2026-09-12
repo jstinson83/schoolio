@@ -10,7 +10,12 @@
     <main class="splash">
         <h1>Schoolio</h1>
 
-        <#if authError??>
+        <#-- Deliberately gated on !currentUser??, not just authError?? - a stray
+             authError=1 can land in the URL even after a successful sign-in (e.g.
+             a duplicate /auth/google/callback hit reusing an already-consumed
+             authorization code), and showing this banner on top of a real signed-in
+             session is confusing/wrong, not just cosmetic. -->
+        <#if authError?? && !(currentUser??)>
             <p class="banner-error">Couldn't sign you in - either something went wrong, or that Google
                 account isn't allowed to use this app.</p>
         </#if>

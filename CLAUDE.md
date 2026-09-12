@@ -84,3 +84,16 @@ hit the same way.
 - **schoolio needs its own OAuth 2.0 Client ID**, distinct from `foodie`'s,
   even though both share the `foodie-503510` GCP project/consent screen —
   a Client ID's redirect URIs are specific to one app.
+- **A stray `?authError=1` can land in the URL even after a real,
+  successful sign-in** - hit in production, not just theoretical. A
+  duplicate `/auth/google/callback` request (Google's own internal
+  redirect chain when the browser already has an active Google session
+  can fire the callback more than once) tries to reuse an
+  already-consumed authorization code on the second hit; that one fails
+  and redirects to `/?authError=1`, even though the *first* hit already
+  completed sign-in successfully. `splash.ftl` used to show the error
+  banner purely off `authError??`, independent of whether `currentUser`
+  was set - fixed by gating the banner on `authError?? && !(currentUser??)`
+  (parenthesized deliberately - FreeMarker's `!`/`??` precedence when
+  mixed is easy to get wrong). See `testSuccessfulSignInHidesErrorBanner...`
+  in `AuthTest.kt` for the regression test.
