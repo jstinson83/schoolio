@@ -131,11 +131,20 @@ hit the same way.
   already-consumed authorization code on the second hit; that one fails
   and redirects to `/?authError=1`, even though the *first* hit already
   completed sign-in successfully. `splash.ftl` used to show the error
-  banner purely off `authError??`, independent of whether `currentUser`
-  was set - fixed by gating the banner on `authError?? && !(currentUser??)`
-  (parenthesized deliberately - FreeMarker's `!`/`??` precedence when
-  mixed is easy to get wrong). See `testSuccessfulSignInHidesErrorBanner...`
-  in `AuthTest.kt` for the regression test.
+  banner purely off `authError??`, independent of whether the visitor was
+  actually signed in - **outdated: this was originally "fixed" by gating
+  the banner on a `currentUser??` check inside the template, but that
+  check was always a no-op** (`currentUser` is never in `splash.ftl`'s
+  model at all - see the template's own comment) **and has since been
+  removed.** The fix that actually matters, and still stands, is in
+  `Application.kt`'s `GET /` handler: it redirects a signed-in visitor
+  straight to `/inbox` *before* ever rendering `splash.ftl`, so a stale
+  `authError=1` on an already-signed-in request never reaches the
+  template at all - `splash.ftl` only ever renders (and only ever needs
+  to show the banner) for a genuinely signed-out visitor. See
+  `testSuccessfulSignInHidesErrorBannerEvenWithStaleAuthErrorParam` in
+  `AuthTest.kt` for the regression test, whose own comment documents this
+  correctly.
 - **Gemini model names churn on Google's release schedule, same as
   `foodie`** — 1.5 and 2.0 Flash are both already retired as of mid-2026,
   and this project's own first pass at `GeminiClient.kt` shipped with
