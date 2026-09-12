@@ -127,11 +127,21 @@ fun Application.module(
         staticResources("/", "static")
 
         get("/") {
+            val userModel = call.currentUserModel()
+            if (userModel["currentUser"] != null) {
+                // Signed-in visitors have no use for the splash page - send
+                // them straight to the inbox instead of making them click
+                // "View inbox" every time (also covers completeSignIn's
+                // post-login redirect to "/", so that's one hop instead of
+                // a rendered splash page in between).
+                call.respondRedirect("/inbox")
+                return@get
+            }
             val revision = System.getenv("K_REVISION")
             call.respond(
                 FreeMarkerContent(
                     "splash.ftl",
-                    mapOf("revision" to revision, "authError" to (call.request.queryParameters["authError"] != null)) + call.currentUserModel()
+                    mapOf("revision" to revision, "authError" to (call.request.queryParameters["authError"] != null)) + userModel
                 )
             )
         }
