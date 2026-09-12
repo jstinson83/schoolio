@@ -22,16 +22,18 @@ fun Route.inboxRoutes(
     get("/inbox") {
         val userId = call.requireUserId()
         val user = userStore.find(userId)
-        val refreshToken = user?.googleRefreshToken
+        val appPassword = user?.gmailAppPassword
         val settings = settingsStore.get()
-        // Included on every branch below so the settings form always shows
-        // the current values, whether or not a scan actually ran this request.
+        // Included on every branch below so the settings/app-password forms
+        // always show the current values, whether or not a scan actually ran
+        // this request.
         val settingsModel = mapOf(
             "sendersText" to settings.schoolSenders.joinToString(", "),
-            "lookbackWeeks" to settings.lookbackWeeks
+            "lookbackWeeks" to settings.lookbackWeeks,
+            "hasAppPassword" to (appPassword != null)
         )
 
-        if (refreshToken == null) {
+        if (appPassword == null) {
             call.respond(FreeMarkerContent("inbox.ftl", mapOf("needsGmailAccess" to true) + settingsModel + call.currentUserModel()))
             return@get
         }
@@ -40,7 +42,7 @@ fun Route.inboxRoutes(
             return@get
         }
 
-        val messages = gmailClient.searchMessages(refreshToken, settings.schoolSenders, settings.lookbackWeeks)
+        val messages = gmailClient.searchMessages(user.email, appPassword, settings.schoolSenders, settings.lookbackWeeks)
         val items = messages.map { message ->
             val extraction = geminiClient.extract(message.subject, message.from, message.bodyText)
             mapOf(
@@ -54,11 +56,26 @@ fun Route.inboxRoutes(
         call.respond(FreeMarkerContent("inbox.ftl", mapOf("items" to items) + settingsModel + call.currentUserModel()))
     }
 
+    // Separate from Google sign-in entirely (see User.gmailAppPassword's doc
+    // comment) - this is how a signed-in user grants IMAP access to their own
+    // mailbox. Never echoes the stored value back to the form (the model's
+    // hasAppPassword is a boolean, not the secret itself), so this form is
+    // always blank - submitting it always overwrites, which is also how
+    // rotating a revoked/changed app password works, not just first-time setup.
+    post("/inbox/connect-gmail") {
+        val userId = call.requireUserId()
+        val appPassword = call.receiveParameters()["appPassword"]?.trim()
+        if (!appPassword.isNullOrEmpty()) {
+            userStore.saveGmailAppPassword(userId, appPassword)
+        }
+        call.respondRedirect("/inbox")
+    }
+
     post("/inbox/settings") {
         val form = call.receiveParameters()
         val senders = parseSchoolSenders(form["senders"])
         // Clamped rather than trusting raw input - a stray huge number would
-        // turn into an equally huge Gmail `after:` window for no benefit;
+        // turn into an equally huge IMAP search window for no benefit;
         // zero/negative would search a nonsensical or empty window.
         val lookbackWeeks = (form["lookbackWeeks"]?.toIntOrNull() ?: 4).coerceIn(1, 52)
         settingsStore.save(ScanSettings(senders, lookbackWeeks))

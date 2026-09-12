@@ -11,6 +11,17 @@
         <h1>Inbox</h1>
         <p><a href="/">Back</a></p>
 
+        <form method="post" action="/inbox/connect-gmail" class="settings-form">
+            <label>
+                Gmail app password
+                <input type="password" name="appPassword" placeholder="<#if hasAppPassword>already connected - enter a new one to replace it<#else>paste your app password here</#if>" autocomplete="off">
+            </label>
+            <p class="field-hint">Generate one at
+                <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
+                (requires 2-Step Verification on your Google account).</p>
+            <button type="submit">Save</button>
+        </form>
+
         <form method="post" action="/inbox/settings" class="settings-form">
             <label>
                 School senders (comma-separated addresses or domains)
@@ -24,8 +35,7 @@
         </form>
 
         <#if needsGmailAccess??>
-            <p>Gmail access hasn't been granted yet - <a href="/auth/google">sign in again</a> and accept
-                the Gmail permission to see your recent messages here.</p>
+            <p>Gmail isn't connected yet - enter an app password above to see your recent messages here.</p>
         <#elseif noSendersConfigured??>
             <p>No school senders are configured yet - add at least one above.</p>
         <#elseif items??>

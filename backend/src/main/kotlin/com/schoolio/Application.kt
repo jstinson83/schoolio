@@ -33,8 +33,10 @@ private val firestoreClient: Firestore by lazy {
     FirestoreOptions.newBuilder().setDatabaseId(databaseId).build().service
 }
 
-// Shared by the Google OAuth/userinfo calls and Gmail API calls - all fast,
-// low-volume requests, so one client with CIO's default timeouts covers both.
+// Google OAuth token exchange + userinfo calls only now - Gmail access no
+// longer goes through this client at all (IMAP instead, see
+// ImapGmailClient/GmailClient.kt), just fast/low-volume identity calls, so
+// CIO's default timeouts are fine.
 private val oauthHttpClient: HttpClient by lazy {
     HttpClient(CIO) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -63,7 +65,7 @@ private val geminiHttpClient: HttpClient by lazy {
 
 fun Application.module(
     userStore: UserRepository = FirestoreUserStore(firestoreClient),
-    gmailClient: GmailClient = RestGmailClient(oauthHttpClient),
+    gmailClient: GmailClient = ImapGmailClient(),
     geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
     oauthClient: HttpClient = oauthHttpClient,
     oauthRedirectBaseUrl: String = System.getenv("OAUTH_REDIRECT_BASE_URL") ?: "http://localhost:8080",

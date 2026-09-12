@@ -43,10 +43,6 @@ fun Route.authRoutes(oauthHttpClient: HttpClient, userStore: UserRepository, all
                 return@get
             }
             val user = userStore.findOrCreateByGoogle(userInfo.sub, userInfo.email, userInfo.name)
-            // Only present when Google actually issued one this round (see
-            // extraAuthParameters in GoogleAuthFlow.kt for why that's
-            // expected on every sign-in, not just the first).
-            principal.refreshToken?.let { userStore.saveGoogleRefreshToken(user.id, it) }
             call.completeSignIn(user)
         }
     }

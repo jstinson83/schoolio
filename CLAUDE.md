@@ -48,9 +48,9 @@ and `.claude/context.md` for architecture decisions made so far.
   own instructions specify (it can vary by environment) — don't hardcode a
   specific author line here.
 
-## Deploy pipeline, Firestore config, Gemini integration gotchas
+## Deploy pipeline, Firestore config, Gmail/IMAP, Gemini integration gotchas
 
-Not deployed yet, but this section already has a few real ones. Check
+This section already has a few real ones. Check
 `foodie`'s `CLAUDE.md` for the shape more of these tend to take (Cloud Run +
 Cloud Build specifics, Firestore composite-index gotchas, Gemini
 prompt/response quirks) before re-deriving something Schoolio is likely to
@@ -67,20 +67,33 @@ hit the same way.
   credentials" error. Automated tests never hit this — `testModule()`
   always passes `FakeUserRepository`, so the real default is never
   evaluated.
-- **`gmail.readonly` is a Google "restricted" OAuth scope.** With the
-  consent screen left in "Testing" publish status (fine indefinitely for
-  a fixed 2-user app — no CASA security assessment/formal verification
-  needed), sign-in shows a "Google hasn't verified this app" warning that
-  has to be clicked through (Advanced → Go to Schoolio), and only accounts
-  added as test users on that consent screen can sign in at all — separate
-  from, and in addition to, this app's own `ALLOWED_EMAILS` gate.
-- **`extraAuthParameters = access_type=offline, prompt=consent`** on the
-  OAuth provider (`GoogleAuthFlow.kt`) is what makes Google actually return
-  a `refresh_token` on every sign-in, not just the first — without
-  `access_type=offline` no refresh token comes back at all; without
-  `prompt=consent` one only comes back the very first time an account
-  consents. Forces the consent screen every sign-in as a side effect,
-  which is an acceptable trade for two accounts that sign in rarely.
+- **SUPERSEDED, kept for the reasoning: `gmail.readonly` (the original
+  Gmail-access approach) is a Google "restricted" OAuth scope, and that's
+  why Gmail access moved to IMAP + app passwords instead (see
+  `context.md`'s Gmail integration section for the full story).** This app
+  no longer requests `gmail.readonly` or any Gmail OAuth scope at all — if
+  you're debugging an "unverified app" warning or a test-user-list issue on
+  sign-in today, something has regressed, because plain identity scopes
+  (`openid`/`email`/`profile`) shouldn't trigger either. The real numbers
+  that drove the switch: restricted scopes need an annual CASA Tier 2
+  security assessment (~$500–$1,000/year, recurring) to leave "Testing"
+  status, and refresh tokens for a Testing-status app reportedly expire
+  after 7 days regardless — both real costs for a two-person app that
+  IMAP + app passwords avoid entirely (app passwords don't expire on a
+  timer, and aren't OAuth at all).
+- **Jakarta Mail's `Store`/`Folder`/`Message` API (`ImapGmailClient`,
+  `GmailClient.kt`) is blocking I/O, not coroutine-friendly** — wrapped in
+  `withContext(Dispatchers.IO)`. Don't call it directly from a
+  non-IO-dispatched coroutine context without that wrapper, or it'll block
+  whatever thread pool is running the request.
+- **`ImapGmailClientTest` uses GreenMail over plain `imap`, not `imaps`,
+  against `ImapGmailClient`'s real code** (not a hand-rolled fake) —
+  `host`/`port`/`protocol` are constructor params specifically so tests can
+  point at GreenMail's in-process fake server. Plain `imap` (not `imaps`)
+  is deliberate: GreenMail's IMAPS uses a self-signed cert Jakarta Mail
+  won't trust by default, and that's not what these tests are verifying.
+  The real `ImapGmailClient()` default (`imap.gmail.com:993`, `imaps`) is
+  unaffected — only test construction passes different values.
 - **schoolio needs its own OAuth 2.0 Client ID**, distinct from `foodie`'s,
   even though both share the `foodie-503510` GCP project/consent screen —
   a Client ID's redirect URIs are specific to one app.

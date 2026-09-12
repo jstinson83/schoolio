@@ -61,12 +61,11 @@ Worth checking there for precedent before inventing a new pattern here.
   (Ktor's built-in OAuth2 provider, signed session cookie via
   `SessionTransportTransformerMessageAuthentication`) rather than
   client-side Google Identity Services — simpler for a server-rendered app.
-  Scope requested is `openid email profile
-  https://www.googleapis.com/auth/gmail.readonly` in one shot at login,
-  not a separate "connect Gmail" step later, since Gmail access is the
-  whole point of this app. `extraAuthParameters = access_type=offline,
-  prompt=consent` on every sign-in (not just the first) so Google reliably
-  returns a `refresh_token` to persist — see Gmail integration below.
+  Scope requested is **identity only** — `openid email profile`, all
+  "non-sensitive" — deliberately *not* `gmail.readonly` or any other Gmail
+  scope. Google sign-in and Gmail data access are two fully separate
+  concerns here (see Gmail integration below for why and how) — signing in
+  proves who you are; it grants no mailbox access on its own.
 - **Shared state / sign-in gating**: **decided — fixed two-person
   allowlist**, not a `foodie`-style household/invite-code model. Only two
   Google accounts will ever use this app (maintainer + spouse), so an
@@ -82,37 +81,55 @@ Worth checking there for precedent before inventing a new pattern here.
     second sign-in method resolve to the same account). Schoolio has
     exactly one sign-in method, so `User.id == googleSub` directly — see
     `UserStore.kt`.
-- **Gmail integration**: plain REST calls against `gmail.googleapis.com`
-  (`GmailClient`/`RestGmailClient` in `GmailClient.kt`), not the
-  `google-api-services-gmail` client library — consistent with the
-  no-framework call above and with how `foodie`'s own Google/Firebase
-  calls (`GoogleAuthFlow.kt`, `EmailAuthFlow.kt`) go through a plain
-  injected `HttpClient` rather than a provider SDK, which is also what
-  makes it fake-able with `MockEngine` in tests. Each user's Google
-  `refresh_token` is stored on their Firestore `User` doc
-  (`googleRefreshToken`) and exchanged for a short-lived access token on
-  every Gmail call (`RestGmailClient.refreshAccessToken`) rather than
-  cached — pulls are infrequent (on app open, or periodically — still an
-  open question below), so there's no hot path worth caching a ~1-hour
-  token for yet.
-  - `GET /inbox` (`InboxRoutes.kt`) is now the app's main flow, not just a
-    proof-of-pull: `RestGmailClient.searchMessages` scopes the Gmail
-    `messages.list` call server-side with a `q=after:<epoch> (from:a OR
-    from:b OR ...)` query — never an unfiltered inbox pull, see README's "I
-    don't want to pull all my email" framing — then fetches each match with
-    `format=full` (not `metadata`) since Gemini needs body text, not just
-    headers. Body extraction walks the MIME `parts` tree for a `text/plain`
-    part (base64url-decoded), falling back to Gmail's own `snippet` field
-    for the rare message with none. Each result is run through
-    `GeminiClient.extract` and rendered with its summary + action items.
-    Still prompts to "sign in again" if no refresh token is stored yet
-    (shouldn't normally happen given `prompt=consent` above, but the route
-    handles it rather than crashing) — and now also shows a distinct "no
-    senders configured" state when the sender list is empty, checked
-    *before* ever calling Gmail.
-  - Not paginated — a single `messages.list` call (Gmail's default page
-    size) is assumed to cover a household's few-weeks/few-senders volume;
-    worth revisiting if that assumption ever breaks.
+- **Gmail integration: plain IMAP (Jakarta Mail), not the Gmail REST
+  API/OAuth.** This was a deliberate reversal partway through — the
+  original build (see git history) used the Gmail REST API with an OAuth
+  `gmail.readonly` scope, exactly the `foodie`-consistent "no provider SDK,
+  plain HttpClient" pattern the rest of this app follows. That got as far
+  as working end to end (real sign-in, real Gmail pull, both verified live)
+  before the cost of `gmail.readonly` became clear: it's a Google
+  "restricted" OAuth scope, which requires an annual **CASA Tier 2 paid
+  security assessment** (~$500–$1,000/year, recurring) to move the app out
+  of "Testing" consent-screen status — and *even while staying in Testing*,
+  refresh tokens for a Testing-status app reportedly expire after 7 days,
+  which would have broken any periodic/background pulling anyway. Not
+  worth either cost for a two-person household app. IMAP + a per-user
+  **Gmail "app password"** (`myaccount.google.com/apppasswords`, requires
+  2-Step Verification) sidesteps all of it — it isn't OAuth at all, so none
+  of the restricted-scope machinery applies, and app passwords don't expire
+  on a timer.
+  - `ImapGmailClient` (`GmailClient.kt`) connects via Jakarta Mail
+    (`com.sun.mail:jakarta.mail`) to `imap.gmail.com:993` over `imaps`,
+    authenticating with the user's `email` + `gmailAppPassword` (stored on
+    their Firestore `User` doc — see `UserStore.kt`). `host`/`port`/
+    `protocol` are constructor params, not hardcoded, purely so
+    `ImapGmailClientTest` can point the same code at an in-process fake IMAP
+    server (GreenMail) over plain unencrypted `imap` instead of real Gmail —
+    GreenMail's IMAPS uses a self-signed cert Jakarta Mail won't trust by
+    default, and that's not what those tests are exercising anyway.
+  - Sender/date filtering happens **server-side via IMAP SEARCH**
+    (`AndTerm(OrTerm(FromStringTerm per sender), ReceivedDateTerm)`) — same
+    "never pull the whole inbox to filter locally" principle the old Gmail
+    `q=` search query followed, just expressed as IMAP search terms instead
+    of a Gmail query string.
+  - Body text: walks the MIME tree for a `text/plain` part first; if a
+    message has none (some HTML-only newsletters), falls back to a crude
+    regex tag-strip of the first `text/html` part rather than pulling in a
+    full HTML parser (Jsoup, as `foodie` uses) for just this one fallback
+    path.
+  - Jakarta Mail's `Store`/`Folder`/`Message` API is **blocking I/O**, not
+    coroutine-friendly — `ImapGmailClient.searchMessages` wraps the whole
+    thing in `withContext(Dispatchers.IO)`.
+  - `GET /inbox` (`InboxRoutes.kt`) is the app's main flow: checks for a
+    stored app password first (prompts to connect via a form if missing,
+    distinct from the "no senders configured" state, checked before ever
+    calling Gmail), then calls `ImapGmailClient.searchMessages` and runs
+    each result through `GeminiClient.extract`. **`POST
+    /inbox/connect-gmail`** is how a signed-in user sets/rotates their app
+    password — always a blank field (never echoes the stored secret back),
+    a blank submission is a no-op rather than wiping out an existing
+    password (see its route comment). Deliberately not part of the Google
+    sign-in flow at all — see the Auth decision above.
 - **Scan settings** (which senders, how many weeks back): stored in
   Firestore (`SettingsRepository`/`FirestoreSettingsStore` in
   `SettingsStore.kt`), one shared doc at `settings/scan` — not per-user,
@@ -149,10 +166,11 @@ Worth checking there for precedent before inventing a new pattern here.
   `backend/src/main/resources/static/`, same layout as `foodie`. Routes so
   far: `GET /` (`splash.ftl` — deploy-confirmation revision display, plus
   sign-in/sign-out), `GET /auth/google` + `GET /auth/google/callback` +
-  `POST /logout` (`Auth.kt`), `GET /inbox` + `POST /inbox/settings`
-  (`InboxRoutes.kt`, both gated behind
+  `POST /logout` (`Auth.kt`), `GET /inbox` + `POST /inbox/connect-gmail` +
+  `POST /inbox/settings` (`InboxRoutes.kt`, all three gated behind
   `authenticate(USER_SESSION_PROVIDER_NAME)` — the main scan-and-extract
-  flow and its settings form, see above).
+  flow, its Gmail app-password form, and its sender/lookback settings form,
+  see above).
 - **Env vars** (Cloud Run + local `.env`/shell, not committed): 
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (a *new* OAuth 2.0 Client ID
   under the shared `foodie-503510` project — not foodie's own client, since
@@ -170,15 +188,12 @@ Worth checking there for precedent before inventing a new pattern here.
   authenticate against `generativelanguage.googleapis.com`), `GEMINI_MODEL`
   (defaults to `gemini-3.6-flash` — verify against `foodie`'s current model
   first, see CLAUDE.md's Gemini gotchas).
-- **Firestore database**: not created yet. Must be a *new* database under
-  the shared `foodie-503510` project, distinct from `foodie`'s
-  `foodie-nne1` — planned id `schoolio` (or `schoolio-nne1` to mirror
-  `foodie`'s region-suffixed naming, not decided), region
-  `northamerica-northeast1` to match Cloud Run/co-locate with `foodie`'s
-  database. Firestore databases aren't created implicitly by the app the
-  way a Firestore *collection* is — this needs a one-time manual step
-  (console or `gcloud firestore databases create`) before `FirestoreUserStore`
-  will actually work.
+- **Firestore database**: created and confirmed working — real sign-in on
+  the deployed Cloud Run service has round-tripped through
+  `FirestoreUserStore` successfully. Database id/region weren't
+  re-confirmed after the fact here; presumed `schoolio` in
+  `northamerica-northeast1` (the code's own defaults) unless the
+  maintainer set `FIRESTORE_DATABASE_ID` to something else on Cloud Run.
 - **Local dev needs Google Cloud Application Default Credentials** for the
   real `FirestoreUserStore` — running the app locally (`./gradlew run`)
   without `gcloud auth application-default login` (or a service account
@@ -186,8 +201,10 @@ Worth checking there for precedent before inventing a new pattern here.
   deep inside `google-cloud-firestore` (`DatabaseRootName` builder hitting
   a null project id) rather than a clear error - see CLAUDE.md's gotchas
   section. Automated tests never hit this: `testModule()` always injects
-  `FakeUserRepository`/`FakeGmailClient`, so the real Firestore/Google
-  clients are never constructed in CI.
+  `FakeUserRepository`/`FakeGmailClient`, so the real Firestore client is
+  never constructed in CI (`ImapGmailClientTest` does exercise a real IMAP
+  client, just against GreenMail's in-process fake server, not real Gmail
+  or Firestore).
 - **Deploy**: `cloudbuild.yaml` at repo root + `backend/Dockerfile`
   (multi-stage: `eclipse-temurin:21-jdk-jammy` builds the fat jar via
   `./gradlew buildFatJar`, `eclipse-temurin:21-jre-jammy` runs it), same

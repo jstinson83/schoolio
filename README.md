@@ -27,8 +27,10 @@ items — shared with my wife, not just me.
   the extracted items.
 - **Shared state**: my wife and I both see the same data — a fixed
   two-person allowlist, not an open sign-up system.
-- **Auth**: Google sign-in, implemented — requests Gmail read access up
-  front at login, gated to an allowlist of two accounts.
+- **Auth**: Google sign-in, implemented — identity only (gated to an
+  allowlist of two accounts). Gmail access is separate: an "app password"
+  entered once per account, not part of the Google login itself (see
+  Stack below for why).
 
 ## Stack (decided)
 
@@ -36,6 +38,15 @@ items — shared with my wife, not just me.
 - **Storage**: Firestore.
 - **No framework, backend or frontend** — plain Ktor (no Spring/Micronaut),
   server-rendered HTML via template files (no React/Vue/etc.), plain JS/CSS.
+- **Email access: IMAP + Gmail app passwords, not the Gmail API/OAuth.**
+  Originally built the other way (Gmail REST API with an OAuth
+  `gmail.readonly` scope) and got it fully working — but that scope is
+  Google-"restricted," meaning a real, recurring cost (~$500–$1,000/year
+  for a required security assessment) to leave OAuth's "Testing" mode, and
+  even while staying in Testing, Gmail refresh tokens reportedly expire
+  every 7 days. Not worth either for two people. IMAP with a per-account
+  app password (`myaccount.google.com/apppasswords`) sidesteps all of
+  that entirely — no OAuth scope, no expiry.
 
 See `.claude/context.md` for the reasoning and for architecture details as
 they firm up.
@@ -52,12 +63,14 @@ they firm up.
 ## Status
 
 The main flow works end to end: Google sign-in (gated to an allowlist of
-two accounts), then `/inbox` scans the last N weeks of email from a
-configured sender list only (never the whole inbox — both editable in a
-form right on the page) and runs each match through Gemini to show a
-summary and action items — with dates and times when the email states
-them. Nothing about the scan is persisted beyond that sender list/lookback
-setting itself: every visit to `/inbox` re-pulls from Gmail and re-runs
-Gemini fresh, with no caching or dedup of already-seen messages yet. No
-calendar view/export yet, and no human-review step before extraction is
-shown (there's nothing to auto-create yet, so nothing to review).
+two accounts, identity only), a separate "connect Gmail" step (app
+password, entered once per account on `/inbox`), then `/inbox` scans the
+last N weeks of email from a configured sender list only (never the whole
+inbox — both editable in a form right on the page) via IMAP, and runs each
+match through Gemini to show a summary and action items — with dates and
+times when the email states them. Nothing about the scan is persisted
+beyond the sender list/lookback setting and each account's app password:
+every visit to `/inbox` re-pulls from Gmail and re-runs Gemini fresh, with
+no caching or dedup of already-seen messages yet. No calendar view/export
+yet, and no human-review step before extraction is shown (there's nothing
+to auto-create yet, so nothing to review).
