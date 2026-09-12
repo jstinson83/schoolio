@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Inbox - Schoolio</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bitter:wght@600;700&family=Karla:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
     <link rel="stylesheet" href="/css/base.css">
 </head>
 <body>
@@ -37,7 +38,7 @@
                             <li class="action-item">
                                 <div class="action-item-main">
                                     <span class="action-title">${action.title}</span>
-                                    <#if action.date?has_content><span class="action-due">(${action.date})</span></#if>
+                                    <#if action.date?has_content><span class="action-due">${action.date}</span></#if>
                                 </div>
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
