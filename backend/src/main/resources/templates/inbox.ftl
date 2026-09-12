@@ -7,80 +7,76 @@
     <link rel="stylesheet" href="/css/base.css">
 </head>
 <body>
+    <#include "nav.ftl">
     <main class="inbox">
-        <h1>Inbox</h1>
-        <p><a href="/">Back</a></p>
-
-        <form method="post" action="/inbox/connect-gmail" class="settings-form">
-            <label>
-                Gmail app password
-                <input type="password" name="appPassword" placeholder="<#if hasAppPassword>already connected - enter a new one to replace it<#else>paste your app password here</#if>" autocomplete="off">
-            </label>
-            <p class="field-hint">Generate one at
-                <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
-                (requires 2-Step Verification on your Google account).</p>
-            <button type="submit">Save</button>
-        </form>
-
-        <form method="post" action="/inbox/settings" class="settings-form">
-            <label>
-                School senders (comma-separated addresses or domains)
-                <input type="text" name="senders" value="${sendersText}" placeholder="teacher@school.example, pta@school.example">
-            </label>
-            <label>
-                First-time lookback (weeks)
-                <input type="number" name="lookbackWeeks" min="1" max="52" value="${lookbackWeeks?c}">
-            </label>
-            <button type="submit">Save &amp; rescan</button>
-        </form>
+        <h1>Action items</h1>
 
         <#if needsGmailAccess??>
-            <p>Gmail isn't connected yet - enter an app password above to see your recent messages here.</p>
+            <p>Gmail isn't connected yet - <a href="/inbox/settings">connect it in Settings</a> to see your recent messages here.</p>
         <#elseif noSendersConfigured??>
-            <p>No school senders are configured yet - add at least one above.</p>
-        <#elseif items??>
-            <p class="inbox-scope">Scanning for new email from configured senders since the last scan
-                (or the last ${lookbackWeeks} week<#if lookbackWeeks != 1>s</#if> for a sender scanned for the first time).</p>
+            <p>No school senders are configured yet - <a href="/inbox/settings">add at least one in Settings</a>.</p>
+        <#else>
             <#if pendingCount gt 0>
                 <div id="processingBanner" class="banner banner-processing">
                     <span class="processing-banner-text">Processing <#if pendingCount == 1>1 message<#else>${pendingCount} messages</#if>&hellip;</span>
+                    <#if pendingMessages?size gt 0>
+                        <ul class="pending-list">
+                            <#list pendingMessages as pending>
+                                <li>${pending.subject}</li>
+                            </#list>
+                        </ul>
+                    </#if>
                 </div>
             </#if>
-            <#if items?size == 0>
+
+            <#list dateGroups as group>
+                <section class="date-group">
+                    <h2 class="date-heading">${group.displayDate}</h2>
+                    <ul class="action-items">
+                        <#list group.items as action>
+                            <li class="action-item">
+                                <div class="action-item-main">
+                                    <span class="action-title">${action.title}</span>
+                                    <#if action.date?has_content><span class="action-due">(${action.date})</span></#if>
+                                </div>
+                                <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
+                                <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                            </li>
+                        </#list>
+                    </ul>
+                </section>
+            </#list>
+
+            <#if noActionMessages?size gt 0>
+                <section class="other-updates">
+                    <h2>Other updates</h2>
+                    <ul class="message-list">
+                        <#list noActionMessages as message>
+                            <li class="message">
+                                <div class="message-subject">${message.subject}</div>
+                                <#if message.summary?has_content><p class="message-summary">${message.summary}</p></#if>
+                            </li>
+                        </#list>
+                    </ul>
+                </section>
+            </#if>
+
+            <#if failedMessages?size gt 0>
+                <section class="failed-messages">
+                    <h2>Couldn't process</h2>
+                    <ul class="message-list">
+                        <#list failedMessages as message>
+                            <li class="message">
+                                <div class="message-subject">${message.subject}</div>
+                                <p class="message-failed">Couldn't process this message<#if message.reason?has_content>: ${message.reason}</#if></p>
+                            </li>
+                        </#list>
+                    </ul>
+                </section>
+            </#if>
+
+            <#if dateGroups?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
                 <p>No messages found.</p>
-            <#else>
-                <ul class="message-list" id="messageList">
-                    <#list items as item>
-                        <li class="message" data-id="${item.id}" data-status="${item.status}">
-                            <div class="message-subject">${item.subject}</div>
-                            <div class="message-meta">${item.from} &middot; ${item.date}</div>
-                            <div class="message-body">
-                                <#if item.status == "PENDING">
-                                    <p class="message-pending">Processing&hellip;</p>
-                                <#elseif item.status == "FAILED">
-                                    <p class="message-failed">Couldn't process this message<#if item.failureReason?has_content>: ${item.failureReason}</#if></p>
-                                <#else>
-                                    <#if item.summary?has_content>
-                                        <p class="message-summary">${item.summary}</p>
-                                    </#if>
-                                    <#if item.actionItems?size gt 0>
-                                        <ul class="action-items">
-                                            <#list item.actionItems as action>
-                                                <li>
-                                                    <span class="action-title">${action.title}</span>
-                                                    <#if action.description?has_content> &mdash; ${action.description}</#if>
-                                                    <#if action.date?has_content>
-                                                        <span class="action-due">(${action.date})</span>
-                                                    </#if>
-                                                </li>
-                                            </#list>
-                                        </ul>
-                                    </#if>
-                                </#if>
-                            </div>
-                        </li>
-                    </#list>
-                </ul>
             </#if>
         </#if>
     </main>

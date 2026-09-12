@@ -22,13 +22,13 @@
 
         <#if currentUser??>
             <p>Signed in as ${currentUser.email}.</p>
-            <p><a href="/inbox">View inbox</a></p>
+            <p><a class="btn btn-primary" href="/inbox">View inbox</a></p>
             <form method="post" action="/logout">
-                <button type="submit">Sign out</button>
+                <button type="submit" class="btn btn-secondary">Sign out</button>
             </form>
         <#else>
             <p>The backend is up.</p>
-            <p><a href="/auth/google">Sign in with Google</a></p>
+            <p><a class="btn btn-primary" href="/auth/google">Sign in with Google</a></p>
         </#if>
 
         <#if revision??>

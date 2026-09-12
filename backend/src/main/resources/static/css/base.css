@@ -5,6 +5,82 @@ body {
     color: #222;
 }
 
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-primary {
+    background: #2f6fed;
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: #255ac2;
+}
+
+.btn-secondary {
+    background: #fff;
+    color: #222;
+    border-color: #ccc;
+}
+
+.btn-secondary:hover {
+    background: #f0f0ee;
+}
+
+.btn-ghost {
+    background: transparent;
+    color: #444;
+}
+
+.btn-ghost:hover {
+    background: #ececea;
+}
+
+.btn-ghost.active {
+    background: #e4e4e2;
+    color: #111;
+}
+
+.app-nav {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #ddd;
+}
+
+.app-nav-brand {
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: #222;
+    text-decoration: none;
+    margin-right: auto;
+}
+
+.app-nav-links {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.app-nav-signout {
+    margin: 0;
+}
+
 .splash {
     max-width: 32rem;
     margin: 4rem auto;
@@ -62,10 +138,69 @@ body {
     font-weight: 600;
 }
 
-.inbox {
+.inbox, .settings {
     max-width: 40rem;
     margin: 2rem auto;
     padding: 0 1.5rem;
+}
+
+.settings-section {
+    margin-bottom: 1.5rem;
+}
+
+.settings-section h2 {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.date-group {
+    margin-bottom: 1.5rem;
+}
+
+.date-heading {
+    font-size: 1.05rem;
+    color: #1a4373;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 0.35rem;
+    margin: 0 0 0.5rem;
+}
+
+.action-item {
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #eee;
+}
+
+.action-item-main {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.action-description {
+    margin: 0.35rem 0 0;
+}
+
+.action-source {
+    margin: 0.35rem 0 0;
+    color: #666;
+    font-size: 0.8125rem;
+}
+
+.other-updates, .failed-messages {
+    margin-bottom: 1.5rem;
+}
+
+.other-updates h2, .failed-messages h2 {
+    font-size: 1.05rem;
+    color: #1a4373;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 0.35rem;
+    margin: 0 0 0.5rem;
+}
+
+.pending-list {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
 }
 
 .message-list {
