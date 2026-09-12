@@ -25,6 +25,10 @@ data class User(
     // verification requirement entirely (see context.md's Gmail integration
     // notes). Nullable since a user can sign in without having connected
     // Gmail yet - InboxRoutes.kt checks for null and prompts to enter one.
+    // Always plaintext here in memory - FirestoreUserStore encrypts it
+    // (AppPasswordCipher) before it ever reaches the Firestore document and
+    // decrypts it back out, so nothing above the persistence layer needs to
+    // know encryption is happening at all.
     val gmailAppPassword: String? = null,
     val createdAt: Instant? = null
 )
@@ -39,7 +43,12 @@ interface UserRepository {
 // same as foodie's FirestoreUserStore - the Google Cloud Java client returns
 // ApiFuture, not a kotlinx.coroutines-friendly Task, so there's no .await()
 // extension for it here.
-class FirestoreUserStore(private val firestore: Firestore) : UserRepository {
+class FirestoreUserStore(
+    private val firestore: Firestore,
+    // See AppPasswordCipher's doc comment for why this is a plain string env
+    // var rather than a proper key/KMS setup.
+    private val appPasswordEncryptionKey: String
+) : UserRepository {
     private val collection = firestore.collection("users")
 
     override suspend fun findOrCreateByGoogle(googleSub: String, email: String, name: String): User {
@@ -66,7 +75,7 @@ class FirestoreUserStore(private val firestore: Firestore) : UserRepository {
     }
 
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
-        collection.document(id).update("gmailAppPassword", appPassword).get()
+        collection.document(id).update("gmailAppPassword", AppPasswordCipher.encrypt(appPassword, appPasswordEncryptionKey)).get()
     }
 
     private fun toUser(id: String, data: Map<String, Any?>): User = User(
@@ -74,7 +83,16 @@ class FirestoreUserStore(private val firestore: Firestore) : UserRepository {
         googleSub = data["googleSub"] as? String ?: id,
         email = data["email"] as? String ?: "",
         name = data["name"] as? String ?: "",
-        gmailAppPassword = data["gmailAppPassword"] as? String,
+        // Falls back to null (not a thrown exception) on a decrypt failure -
+        // covers a doc written before this encryption existed (plaintext,
+        // won't parse as ciphertext) or the encryption key having changed
+        // since. Either way, the safe behavior is "treat as not connected
+        // yet" (InboxRoutes.kt prompts to (re)enter it) rather than crashing
+        // every find() call - and therefore every signed-in page load - on
+        // one bad field.
+        gmailAppPassword = (data["gmailAppPassword"] as? String)?.let {
+            runCatching { AppPasswordCipher.decrypt(it, appPasswordEncryptionKey) }.getOrNull()
+        },
         createdAt = (data["createdAt"] as? Timestamp)?.let { Instant.ofEpochSecond(it.seconds, it.nanos.toLong()) }
     )
 }

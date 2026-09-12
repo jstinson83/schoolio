@@ -107,6 +107,21 @@ Worth checking there for precedent before inventing a new pattern here.
     server (GreenMail) over plain unencrypted `imap` instead of real Gmail —
     GreenMail's IMAPS uses a self-signed cert Jakarta Mail won't trust by
     default, and that's not what those tests are exercising anyway.
+  - **`User.gmailAppPassword` is encrypted at rest** (`AppPasswordCipher.kt`,
+    AES-256-GCM) — it's a long-lived, broad-access credential (full IMAP
+    mailbox access, unlike the short-lived scoped OAuth token it replaced),
+    so plaintext-in-Firestore was worth closing once actually pointed out.
+    `FirestoreUserStore.saveGmailAppPassword` encrypts before writing;
+    `toUser` decrypts on read, so `User.gmailAppPassword` is always
+    plaintext by the time any other code (`InboxRoutes.kt`,
+    `ImapGmailClient`) touches it — encryption is entirely a persistence
+    concern. Key is `GMAIL_APP_PASSWORD_KEY` — any string, SHA-256'd into a
+    256-bit AES key — rather than Google Cloud KMS/Secret Manager; one env
+    var is proportionate for a two-person app. A decrypt failure (a doc
+    written before this existed, still plaintext; or the key having
+    changed) falls back to `null`, not a thrown exception — `find()` (and
+    therefore every signed-in page load) must never crash over one bad
+    field; the user just gets prompted to (re)connect Gmail.
   - Sender/date filtering happens **server-side via IMAP SEARCH**
     (`AndTerm(OrTerm(FromStringTerm per sender), ReceivedDateTerm)`) — same
     "never pull the whole inbox to filter locally" principle the old Gmail
@@ -180,7 +195,10 @@ Worth checking there for precedent before inventing a new pattern here.
   (externally-visible base URL for the OAuth callback — defaults to
   `http://localhost:8080` locally), `ALLOWED_EMAILS` (comma-separated,
   gates sign-in itself — see the Shared state/sign-in gating decision
-  above), `FIRESTORE_DATABASE_ID` (defaults to `"schoolio"` if unset — see
+  above), `GMAIL_APP_PASSWORD_KEY` (encryption key for `User.gmailAppPassword`
+  at rest — see Gmail integration above; same hardcoded-insecure-dev-value
+  fallback pattern as `SESSION_SECRET`, must be set on Cloud Run),
+  `FIRESTORE_DATABASE_ID` (defaults to `"schoolio"` if unset — see
   below), `SCHOOL_SENDERS` / `LOOKBACK_WEEKS` (seed the Firestore scan
   settings doc's first read only — see "Scan settings" above; once the
   `/inbox` settings form is submitted once, edit the values there instead,

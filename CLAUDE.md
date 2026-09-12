@@ -94,6 +94,17 @@ hit the same way.
   won't trust by default, and that's not what these tests are verifying.
   The real `ImapGmailClient()` default (`imap.gmail.com:993`, `imaps`) is
   unaffected — only test construction passes different values.
+- **Changing `GMAIL_APP_PASSWORD_KEY` makes every already-stored app
+  password undecryptable.** `AppPasswordCipher` derives the AES key from
+  this one env var - rotate it and every existing encrypted
+  `gmailAppPassword` in Firestore silently stops decrypting (falls back to
+  `null` via `UserStore.kt`'s `runCatching`, not a crash - see that gotcha
+  below). Not a migration path, just "both accounts have to re-enter their
+  app password via `/inbox/connect-gmail` after a key rotation" - fine for
+  two people, worth knowing before treating this env var as freely
+  changeable the way `SESSION_SECRET` effectively is (rotating that only
+  invalidates sessions, which just means signing in again - cheaper than
+  re-generating a Google app password).
 - **schoolio needs its own OAuth 2.0 Client ID**, distinct from `foodie`'s,
   even though both share the `foodie-503510` GCP project/consent screen —
   a Client ID's redirect URIs are specific to one app.

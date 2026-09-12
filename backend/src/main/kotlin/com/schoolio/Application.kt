@@ -64,7 +64,16 @@ private val geminiHttpClient: HttpClient by lazy {
 }
 
 fun Application.module(
-    userStore: UserRepository = FirestoreUserStore(firestoreClient),
+    // Falls back to a hardcoded insecure dev value if unset, same pattern as
+    // sessionSecret below - fine locally, but must be set on Cloud Run or
+    // every deploy effectively shares one weak key (and, unlike
+    // sessionSecret, changing it after real app passwords are stored makes
+    // those specific docs undecryptable - see toUser's runCatching fallback
+    // in UserStore.kt for how that's handled without crashing).
+    userStore: UserRepository = FirestoreUserStore(
+        firestoreClient,
+        System.getenv("GMAIL_APP_PASSWORD_KEY") ?: "dev-insecure-app-password-key"
+    ),
     gmailClient: GmailClient = ImapGmailClient(),
     geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
     oauthClient: HttpClient = oauthHttpClient,
