@@ -53,8 +53,6 @@ they firm up.
 
 ## Open questions / not yet decided
 
-- How "periodic" pulling would run (background job vs. purely on-open) —
-  the inbox view currently only pulls on-demand, when the page loads.
 - Whether calendar integration targets Google Calendar directly or an
   in-app calendar with optional export/sync.
 - How much human review happens between AI extraction and calendar

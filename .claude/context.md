@@ -178,19 +178,20 @@ Worth checking there for precedent before inventing a new pattern here.
 Resolves what used to be this section's top open question ("how periodic
 pulling runs, no dedup yet") — `GET /inbox` used to pull from Gmail *and*
 run every message through Gemini synchronously in the same request, which
-is what made the page freeze while scanning. Now split into two phases:
+is what made the page freeze while scanning. Now split into two phases, and
+as of the sync rework below, *both* phases run in the background:
 
-- **Pull (`pullAndStoreNewMessages`, `InboxRoutes.kt`)** — runs synchronously
-  on every `GET /inbox`, but is just one IMAP round trip: fetch, then
-  `MessageRepository.storeIfAbsent` each result as a raw `EmailMessage`
-  (`MessageStore.kt`) with `status = PENDING`. Fast enough not to block the
-  page. Doc id is the Gmail Message-ID (sanitized only to strip a stray "/"),
-  making a re-pull of an already-stored message a no-op rather than a
-  double-store/reprocess — this is what makes it safe for `since` (below) to
-  sometimes re-request messages already seen.
+- **Pull (`pullAndStoreNewMessages`, `InboxRoutes.kt`)** — one IMAP round
+  trip: fetch, then `MessageRepository.storeIfAbsent` each result as a raw
+  `EmailMessage` (`MessageStore.kt`) with `status = PENDING`. Doc id is the
+  Gmail Message-ID (sanitized only to strip a stray "/"), making a re-pull
+  of an already-stored message a no-op rather than a double-store/reprocess
+  — this is what makes it safe for `since` (below) to sometimes re-request
+  messages already seen. No longer called synchronously from `GET /inbox` —
+  see "Background sync" below.
 - **Process (`processPendingMessages`, `InboxProcessingSweep.kt`)** —
-  debounced: every `GET /inbox` cancels-and-reschedules one shared
-  `backgroundScope.launch { delay(...); ... }` job
+  debounced: every completed pull (see below) cancels-and-reschedules one
+  shared `backgroundScope.launch { delay(...); ... }` job
   (`DEFAULT_INBOX_PROCESS_DEBOUNCE_MS`, overridable for tests), same
   cancel-and-relaunch shape as foodie's `addItemResolveJobs`. One job total,
   not keyed per user — both household accounts share one message collection,
@@ -199,24 +200,70 @@ is what made the page freeze while scanning. Now split into two phases:
   the message `PROCESSED` (with Gemini's summary) or `FAILED` (with a
   reason) — never left silently `PENDING` forever on an error, and never
   silently dropped either.
-- **`GET /inbox/status`** — polled by `inbox.ftl`'s processing banner
-  (`app.js`) while any message is `PENDING` at page load, so a message that
-  finishes after the page rendered updates in place without a manual reload
-  — same shape as foodie's `GET /recipe/status` banner.
+- **`GET /inbox/status`** — polled by `inbox.ftl`'s banner (`app.js`) while
+  a pull is syncing or any message is `PENDING` at page load, so new
+  mail/finished processing that happens after the page rendered shows up
+  without a manual reload — same shape as foodie's `GET /recipe/status`
+  banner.
+
+**Background sync (decided):** the Gmail pull itself is backgrounded too,
+not just Gemini processing. It used to run synchronously inside `GET /inbox`
+(justified at the time as "just one fast IMAP round trip"), but a real
+Gmail search over weeks of mail was slow enough to freeze the page load in
+practice — the exact problem already solved for the Gemini step. `GET
+/inbox` now calls `scheduleSync` (`InboxRoutes.kt`), which launches the pull
+on `backgroundScope` and renders the page immediately from whatever's
+already stored, with a `syncing` flag in the template model driving a
+"Checking your inbox for new mail…" banner (same div as the processing
+banner, `#processingBanner`) until the poll above sees it clear. Keyed per
+user (`pullJobs`/`lastSyncedAt`, both `ConcurrentHashMap<String, _>`), not
+shared like the processing job — each household account pulls its own
+Gmail mailbox with its own app password, so one account's search shouldn't
+debounce against the other's. A **resync cooldown**
+(`DEFAULT_INBOX_RESYNC_COOLDOWN_MS`, 1 minute) bounds how often a *new* pull
+can even start per user: without it, every page view (including the
+automatic reload `app.js` fires once a pull finishes) would kick off
+another pull, turning "check once, then settle" into an infinite
+checking/reloading loop that never shows a fully-settled page. A user's
+very first pull this process lifetime always bypasses the cooldown.
 
 **Action items are first-class** (`ActionItemStore.kt`), not nested inside
 the message: their own top-level `actionItems` Firestore collection, schema
-`(title, description, date)`, with `sourceMessageId` linking back to the raw
-`EmailMessage` for provenance only — that link isn't part of the main app
-flow, which still just renders action items inline under their message
-(`inbox.ftl`). `date` is one combined ISO-8601 field (`YYYY-MM-DD`, or
-`YYYY-MM-DD'T'HH:MM` when Gemini also extracted a time) — `dueDate`/`dueTime`
-stay separate through Gemini's own extraction step (`GeminiClient.kt`'s
-`ExtractedActionItem`, previously named plain `ActionItem` — renamed to free
-up the `ActionItem` name for this persisted domain type) for the same
-"don't force a time that wasn't stated" reason as before; they only collapse
-into one field at the point `InboxProcessingSweep.kt` turns an extraction
-into a persisted `ActionItem`.
+`(title, description, date, dismissed)`, with `sourceMessageId` linking back
+to the raw `EmailMessage` for provenance only — that link isn't part of the
+main app flow, which still just renders action items inline under their
+message (`inbox.ftl`). `date` is one combined ISO-8601 field (`YYYY-MM-DD`,
+or `YYYY-MM-DD'T'HH:MM` when Gemini also extracted a time) — `dueDate`/
+`dueTime` stay separate through Gemini's own extraction step
+(`GeminiClient.kt`'s `ExtractedActionItem`, previously named plain
+`ActionItem` — renamed to free up the `ActionItem` name for this persisted
+domain type) for the same "don't force a time that wasn't stated" reason as
+before; they only collapse into one field at the point
+`InboxProcessingSweep.kt` turns an extraction into a persisted `ActionItem`.
+
+**Action items can be dismissed (decided).** `dismissed` is a single boolean
+flip (`ActionItemRepository.dismiss`/`restore`, a single-field Firestore
+update, not a full document rewrite) rather than deletion — dismissing is
+meant to be a "get this off my plate" action, reversible from the
+dismissed-items page, not data loss. `/inbox` only ever shows non-dismissed
+items; `GET /inbox/dismissed` is the only place dismissed ones are visible,
+each with a "Restore" button. Its nav link (`nav.ftl`'s `.nav-link-subtle`)
+is deliberately understated — smaller, lower-opacity, no active-state
+background fill — since it's a review/undo page, not a primary destination.
+
+**`/inbox`'s main content is three sections (decided):** non-dismissed
+action items grouped by due date (`dateGroups`, unchanged/original
+behavior, chronological), then a flat **"Past events"** section
+(`pastActionItems`) for items whose known due date has already gone by,
+then "Other updates" (processed messages with no action items at all,
+unchanged). Only an item with an actual Gemini-extracted `dueDate` can land
+in Past events (`InboxRoutes.kt`'s `isPastDue`, comparing against
+`LocalDate.now(UTC)`) — an item with no date at all falls back to its
+source message's sent date purely for the *upcoming* section's date-heading
+grouping (see `dateKeyAndTime`), which says nothing about whether it's
+still actionable, so those stay in the upcoming section rather than being
+swept into Past events. Every item in both sections has a "Dismiss" button
+posting to `POST /inbox/action-items/{id}/dismiss`.
 
 **Rescanning is watermark-based, not a rolling lookback window every time**
 (`ScanStateStore.kt`). Per-sender, not one global value — keyed on `sender`
