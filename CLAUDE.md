@@ -153,3 +153,11 @@ hit the same way.
   quirk `foodie`'s `RecipeParser.kt` works around. `RestGeminiClient.extract`
   strips it (`stripJsonFence`) before decoding; don't remove that without
   re-verifying against a live response first.
+- **`sw.js`'s `CACHE_NAME` must be bumped whenever any file in its
+  `STATIC_ASSETS` list changes** (`css/base.css`, `app.js`, `manifest.json`,
+  `logo.svg`) — same requirement as `foodie`'s service worker, for the same
+  reason: bumping the version string is what changes `sw.js`'s own bytes,
+  which is what makes browsers notice the update, install a new worker, and
+  repopulate the cache. Editing a cached file's contents without bumping it
+  leaves every browser that already installed the service worker serving
+  the stale cached version indefinitely.

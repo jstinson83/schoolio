@@ -1,6 +1,12 @@
 // One shared file, per-page blocks gated on a DOM element that only exists
 // on that page - same convention as foodie's app.js.
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 // Nav bar (nav.ftl) - present on every page behind the nav include, so this
 // block just no-ops (via the early return) on splash.ftl, which doesn't
 // include nav.ftl.

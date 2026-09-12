@@ -1,0 +1,15 @@
+{
+  "name": "Schoolio",
+  "short_name": "Schoolio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#e9edf3",
+  "theme_color": "#1f3a5f",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
