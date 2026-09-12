@@ -106,7 +106,9 @@ fun Application.module(
     scanStateStore: ScanStateRepository = FirestoreScanStateStore(firestoreClient),
     // Overridable only so tests don't have to sleep the real default - see
     // InboxRoutes.kt's doc comment on the default value.
-    inboxProcessDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS
+    inboxProcessDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
+    inboxPullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
+    inboxResyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
@@ -152,7 +154,7 @@ fun Application.module(
             inboxRoutes(
                 userStore, gmailClient, geminiClient, settingsStore,
                 messageStore, actionItemStore, scanStateStore,
-                backgroundScope, inboxProcessDebounceMs
+                backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs
             )
         }
     }

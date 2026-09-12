@@ -40,12 +40,12 @@ class InboxTest {
         )
         val client = signInFakeUserWithGmailConnected(userStore, appPassword = "fake-app-password")
 
-        // GET /inbox pulls and stores the raw message immediately but doesn't
-        // wait on Gemini - it should render as still-pending before the
-        // debounced processing pass has had a chance to run.
-        val pendingBody = client.get("/inbox").bodyAsText()
-        assertTrue(pendingBody.contains("Field trip permission slip"))
-        assertTrue(pendingBody.contains("Processing"))
+        // GET /inbox no longer blocks on the Gmail pull (or Gemini) - the
+        // very first response should show a "checking your inbox" indicator
+        // rather than the pulled message, which hasn't been fetched yet.
+        val syncingBody = client.get("/inbox").bodyAsText()
+        assertTrue(syncingBody.contains("Checking your inbox"))
+        assertFalse(syncingBody.contains("Field trip permission slip"))
 
         awaitMessagesProcessed(messageStore)
 
@@ -81,14 +81,25 @@ class InboxTest {
         val geminiClient = FakeGeminiClient(EmailExtraction(summary = "Nothing to act on.", actionItems = emptyList()))
         val userStore = FakeUserRepository()
         val messageStore = FakeMessageRepository()
-        testModule(userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient, messageStore = messageStore)
+        // Bypasses the resync cooldown (see testModule's doc comment) - this
+        // test specifically needs a second real pull to prove it doesn't
+        // re-run Gemini on an already-processed message.
+        testModule(
+            userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient,
+            messageStore = messageStore, inboxResyncCooldownMs = 0
+        )
         val client = signInFakeUserWithGmailConnected(userStore)
 
         client.get("/inbox")
         awaitMessagesProcessed(messageStore)
         assertEquals(1, geminiClient.extractedSubjects.size)
+        assertEquals(1, gmailClient.searchCallCount)
 
         client.get("/inbox")
+        // Confirms the second pull actually ran (not just that the store's
+        // end state happens to look the same as after one pull) before
+        // checking Gemini wasn't re-run on the already-processed message.
+        awaitCondition("Second pull never ran") { gmailClient.searchCallCount >= 2 }
         awaitMessagesProcessed(messageStore)
         assertEquals(1, geminiClient.extractedSubjects.size, "Re-pulling an already-processed message shouldn't re-run Gemini on it")
     }
@@ -138,14 +149,21 @@ class InboxTest {
         val userStore = FakeUserRepository()
         val messageStore = FakeMessageRepository()
         val scanStateStore = FakeScanStateRepository()
-        testModule(userStore = userStore, gmailClient = gmailClient, messageStore = messageStore, scanStateStore = scanStateStore)
+        // Bypasses the resync cooldown (see testModule's doc comment) - this
+        // test specifically needs a second real pull to prove it scans
+        // forward from the watermark left by the first one.
+        testModule(
+            userStore = userStore, gmailClient = gmailClient, messageStore = messageStore,
+            scanStateStore = scanStateStore, inboxResyncCooldownMs = 0
+        )
         val client = signInFakeUserWithGmailConnected(userStore)
 
         client.get("/inbox")
-        val firstSince = gmailClient.lastSinceUsed!!
         awaitMessagesProcessed(messageStore)
+        val firstSince = gmailClient.lastSinceUsed!!
 
         client.get("/inbox")
+        awaitCondition("Second pull never ran") { gmailClient.lastSinceUsed != null && gmailClient.lastSinceUsed != firstSince }
         val secondSince = gmailClient.lastSinceUsed!!
 
         assertTrue(secondSince.isAfter(firstSince), "Second pull should scan from the watermark left by the first message, not the original lookback window")
@@ -184,6 +202,7 @@ class InboxTest {
 
         val inboxResponse = client.get("/inbox")
         assertFalse(inboxResponse.bodyAsText().contains("Gmail isn't connected yet"))
+        client.awaitInboxSettled()
         assertEquals("new-app-password", gmailClient.lastAppPasswordUsed)
     }
 
@@ -223,6 +242,9 @@ class InboxTest {
         val userStore = FakeUserRepository()
         testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()))
         val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
 
         val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
@@ -282,5 +304,77 @@ class InboxTest {
         userStore.saveGmailAppPassword(TEST_SUB, "some-app-password")
         val connectedBody = client.get("/inbox/settings").bodyAsText()
         assertTrue(connectedBody.contains("already connected"))
+    }
+
+    // An action item whose known due date has already gone by moves to the
+    // "Past events" section (between the upcoming date-groups and "Other
+    // updates") rather than staying mixed into the main chronological list -
+    // see InboxRoutes.kt's isPastDue/buildFlatActionItemViews.
+    @Test
+    fun testPastDueActionItemsAppearInThePastEventsSectionInsteadOfTheMainList() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Overdue permission slip", description = "Sign ASAP", date = "2020-01-01")
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Upcoming field trip", description = "Pack a lunch", date = "2099-01-01")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("Past events"))
+        val beforePastEvents = body.substringBefore("class=\"past-events\"")
+        val pastEventsSection = body.substringAfter("class=\"past-events\"").substringBefore("</section>")
+        assertTrue(beforePastEvents.contains("Upcoming field trip"), "Upcoming item should be in the main list, before Past events")
+        assertFalse(beforePastEvents.contains("Overdue permission slip"), "Overdue item shouldn't be in the main list")
+        assertTrue(pastEventsSection.contains("Overdue permission slip"))
+        assertFalse(pastEventsSection.contains("Upcoming field trip"))
+    }
+
+    // Dismissing an action item (from either the main list or Past events)
+    // removes it from /inbox and moves it to the unprominent GET
+    // /inbox/dismissed page - see InboxRoutes.kt's dismiss/restore routes.
+    @Test
+    fun testDismissingAnActionItemMovesItToTheDismissedPageAndRestoreBringsItBack() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(id = "item-1", sourceMessageId = "none", title = "Field day forms", description = "Sign", date = "2020-01-01")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("Field day forms"))
+        assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
+
+        val dismissResponse = client.submitForm(url = "/inbox/action-items/item-1/dismiss", formParameters = Parameters.build {})
+        assertEquals(HttpStatusCode.Found, dismissResponse.status)
+        assertEquals("/inbox", dismissResponse.headers[HttpHeaders.Location])
+
+        assertFalse(client.get("/inbox").bodyAsText().contains("Field day forms"))
+        assertTrue(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
+
+        val restoreResponse = client.submitForm(url = "/inbox/action-items/item-1/restore", formParameters = Parameters.build {})
+        assertEquals(HttpStatusCode.Found, restoreResponse.status)
+        assertEquals("/inbox/dismissed", restoreResponse.headers[HttpHeaders.Location])
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("Field day forms"))
+        assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
+    }
+
+    // Not prominent (see nav.ftl's nav-link-subtle), but always present so
+    // dismissed items are never unreachable.
+    @Test
+    fun testNavIncludesALinkToDismissedActionItems() = testApplication {
+        testModule()
+        val client = signInFakeUser()
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("href=\"/inbox/dismissed\""))
     }
 }

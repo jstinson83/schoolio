@@ -17,9 +17,15 @@
         <#elseif noSendersConfigured??>
             <p>No school senders are configured yet - <a href="/inbox/settings">add at least one in Settings</a>.</p>
         <#else>
-            <#if pendingCount gt 0>
+            <#if syncing || pendingCount gt 0>
                 <div id="processingBanner" class="banner banner-processing">
-                    <span class="processing-banner-text">Processing <#if pendingCount == 1>1 message<#else>${pendingCount} messages</#if>&hellip;</span>
+                    <span class="processing-banner-text">
+                        <#if syncing>
+                            Checking your inbox for new mail&hellip;
+                        <#else>
+                            Processing <#if pendingCount == 1>1 message<#else>${pendingCount} messages</#if>&hellip;
+                        </#if>
+                    </span>
                     <#if pendingMessages?size gt 0>
                         <ul class="pending-list">
                             <#list pendingMessages as pending>
@@ -42,11 +48,35 @@
                                 </div>
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <form method="post" action="/inbox/action-items/${action.id}/dismiss" class="dismiss-form">
+                                    <button type="submit" class="btn-dismiss">Dismiss</button>
+                                </form>
                             </li>
                         </#list>
                     </ul>
                 </section>
             </#list>
+
+            <#if pastActionItems?size gt 0>
+                <section class="past-events">
+                    <h2>Past events</h2>
+                    <ul class="action-items">
+                        <#list pastActionItems as action>
+                            <li class="action-item action-item-past">
+                                <div class="action-item-main">
+                                    <span class="action-title">${action.title}</span>
+                                    <#if action.date?has_content><span class="action-due">${action.date}</span></#if>
+                                </div>
+                                <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
+                                <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <form method="post" action="/inbox/action-items/${action.id}/dismiss" class="dismiss-form">
+                                    <button type="submit" class="btn-dismiss">Dismiss</button>
+                                </form>
+                            </li>
+                        </#list>
+                    </ul>
+                </section>
+            </#if>
 
             <#if noActionMessages?size gt 0>
                 <section class="other-updates">
@@ -76,7 +106,7 @@
                 </section>
             </#if>
 
-            <#if dateGroups?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
+            <#if !syncing && dateGroups?size == 0 && pastActionItems?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
                 <p>No messages found.</p>
             </#if>
         </#if>

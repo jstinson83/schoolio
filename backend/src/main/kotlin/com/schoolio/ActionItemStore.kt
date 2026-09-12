@@ -14,22 +14,33 @@ import com.google.cloud.firestore.Firestore
 // when Gemini also extracted a time) - InboxRoutes combines
 // ExtractedActionItem's separate dueDate/dueTime into this one field at
 // persistence time; null if the email stated no date at all.
+// dismissed is the first bit of that "done/dismissed/pushed-to-calendar"
+// lifecycle mentioned above - a dismissed item drops out of the main /inbox
+// view (see InboxRoutes.kt's active/dismissed split) but isn't deleted, so
+// it can still be reviewed/restored from GET /inbox/dismissed.
 data class ActionItem(
     val id: String = java.util.UUID.randomUUID().toString(),
     val sourceMessageId: String,
     val title: String,
     val description: String,
-    val date: String? = null
+    val date: String? = null,
+    val dismissed: Boolean = false
 )
 
 interface ActionItemRepository {
-    // Every action item across every message - the inbox page's join target,
-    // grouped by sourceMessageId at the call site (see InboxRoutes.kt).
+    // Every action item across every message, dismissed or not - the inbox
+    // page's join target, grouped by sourceMessageId at the call site (see
+    // InboxRoutes.kt), which itself splits on [ActionItem.dismissed].
     suspend fun getAll(): List<ActionItem>
     // Batched rather than one write per item - a single message can produce
     // several action items in the same Gemini call, and they're always
     // created together (see processPendingMessages).
     suspend fun addAll(items: List<ActionItem>)
+    // Flips dismissed on/off for one item - a single-field update rather than
+    // rewriting the whole document, since nothing else about the item changes
+    // when it's dismissed or restored.
+    suspend fun dismiss(id: String)
+    suspend fun restore(id: String)
 }
 
 class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRepository {
@@ -47,18 +58,28 @@ class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRep
         batch.commit().get()
     }
 
+    override suspend fun dismiss(id: String) {
+        collection.document(id).update("dismissed", true).get()
+    }
+
+    override suspend fun restore(id: String) {
+        collection.document(id).update("dismissed", false).get()
+    }
+
     private fun DocumentSnapshot.toActionItem(): ActionItem = ActionItem(
         id = id,
         sourceMessageId = getString("sourceMessageId") ?: "",
         title = getString("title") ?: "",
         description = getString("description") ?: "",
-        date = getString("date")
+        date = getString("date"),
+        dismissed = getBoolean("dismissed") ?: false
     )
 
     private fun itemToMap(item: ActionItem): Map<String, Any?> = mapOf(
         "sourceMessageId" to item.sourceMessageId,
         "title" to item.title,
         "description" to item.description,
-        "date" to item.date
+        "date" to item.date,
+        "dismissed" to item.dismissed
     )
 }

@@ -15,6 +15,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
 // How long to wait after a Gmail pull before running Gemini over whatever's
 // PENDING - long enough that a settings save (which redirects straight back
@@ -22,6 +23,23 @@ import java.time.format.DateTimeFormatter
 // pass instead of two overlapping ones. Overridable (see processDebounceMs
 // below) so tests don't have to actually sleep the real default.
 const val DEFAULT_INBOX_PROCESS_DEBOUNCE_MS = 5_000L
+
+// Same coalescing reasoning as the process debounce above, applied to the
+// Gmail pull itself now that it also runs in the background (see
+// scheduleSync) - a settings save redirecting straight back into /inbox, or
+// someone just hitting refresh, shouldn't open two overlapping IMAP
+// searches for the same user. Shorter than the process debounce since
+// there's no Gemini call to wait out here, just consecutive page loads.
+const val DEFAULT_INBOX_PULL_DEBOUNCE_MS = 2_000L
+
+// How often a signed-in user's Gmail can actually be re-checked, at most -
+// see scheduleSync's doc comment for why this exists (bounding the
+// view-page -> pull -> auto-reload -> view-page cycle so it settles instead
+// of looping forever). A minute is frequent enough that new mail shows up
+// without a manual refresh feeling laggy, while still keeping this a
+// handful of IMAP connections per hour per user rather than one every few
+// seconds if the tab's left open.
+const val DEFAULT_INBOX_RESYNC_COOLDOWN_MS = 60_000L
 
 // Wire shapes for GET /inbox/status - a plain mapOf(...) mixing Strings/Ints/
 // nested lists is a Map<String, Any>, which kotlinx.serialization can't
@@ -46,16 +64,27 @@ data class FailedMessageSummary(val id: String, val subject: String, val reason:
 // [messages] is every PROCESSED message regardless of how long ago (same
 // "full snapshot, not just what's new" shape as foodie's /recipe/status) -
 // the poller reconciles by id (see app.js), skipping ones already in the DOM.
+// [syncing] is true while any user's Gmail pull is in flight (see
+// scheduleSync) - distinct from [pending], which only tracks the Gemini
+// processing step that comes after a pull finishes storing raw messages.
 @Serializable
-data class InboxStatusResponse(val pending: Int, val messages: List<InboxMessageSummary>, val failed: List<FailedMessageSummary>)
+data class InboxStatusResponse(
+    val pending: Int,
+    val syncing: Boolean,
+    val messages: List<InboxMessageSummary>,
+    val failed: List<FailedMessageSummary>
+)
 
 // The app's main flow: pull the last-unseen email from `schoolSenders` only
 // (never the whole inbox - see README's "Sender filtering" scope item),
-// store it immediately, and let a debounced background pass run each raw
-// message through Gemini. The GET /inbox request itself only ever does the
-// (fast, one-round-trip) IMAP pull - it never blocks on Gemini, which is what
-// used to make the page freeze while scanning. schoolSenders/lookbackWeeks
-// live in Firestore (SettingsRepository), edited via the form on this page.
+// store it, then let a debounced background pass run each raw message
+// through Gemini. GET /inbox no longer waits on either step - it used to run
+// the IMAP pull synchronously and only backgrounded the Gemini step, but a
+// real Gmail search over weeks of mail was still slow enough to freeze the
+// page load, so the pull itself now runs in the background too (see
+// scheduleSync) and the page just shows a "checking for new mail" indicator
+// (see inbox.ftl/app.js) until it's done. schoolSenders/lookbackWeeks live in
+// Firestore (SettingsRepository), edited via the form on this page.
 fun Route.inboxRoutes(
     userStore: UserRepository,
     gmailClient: GmailClient,
@@ -65,7 +94,9 @@ fun Route.inboxRoutes(
     actionItemStore: ActionItemRepository,
     scanStateStore: ScanStateRepository,
     backgroundScope: CoroutineScope,
-    processDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS
+    processDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
+    pullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
+    resyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS
 ) {
     // A single shared job, not keyed per user - both household accounts share
     // one inbox/one set of messages (see MessageStore.kt), so their pulls
@@ -77,6 +108,61 @@ fun Route.inboxRoutes(
         processingJob = backgroundScope.launch {
             delay(processDebounceMs)
             processPendingMessages(messageStore, actionItemStore, geminiClient)
+        }
+    }
+
+    // Keyed per user (unlike processingJob above) because each account pulls
+    // its own Gmail mailbox with its own app password (see
+    // pullAndStoreNewMessages' email/appPassword params) - one household
+    // account's IMAP search shouldn't debounce against the other's. A user id
+    // present in this map with an active Job means that user's pull (and the
+    // short debounce delay before it) hasn't finished yet - GET /inbox and
+    // GET /inbox/status both read it to show a "checking for new mail"
+    // indicator instead of the old behavior of blocking the whole page load
+    // on the IMAP round trip.
+    val pullJobs = ConcurrentHashMap<String, Job>()
+
+    // When each user's pull last finished (successfully or not) - see
+    // resyncCooldownMs below. Absent entirely means "never synced this
+    // process lifetime," which always bypasses the cooldown so a user's very
+    // first /inbox visit (or the first one after this app process restarts)
+    // still checks immediately.
+    val lastSyncedAt = ConcurrentHashMap<String, Instant>()
+
+    fun isSyncing(userId: String) = pullJobs[userId]?.isActive == true
+
+    // GET /inbox calls this on *every* request, so without some limit a user
+    // who leaves the tab open would retrigger a brand-new pull on every
+    // single page load - including the automatic reload app.js fires once a
+    // pull finishes (see its poll loop), which would otherwise turn into an
+    // infinite "checking for new mail" reload loop that never settles, even
+    // once there's genuinely nothing new. isSyncing above already prevents
+    // two overlapping pulls for the same user; resyncCooldownMs bounds how
+    // often a *new* one can even start, the same purpose lookbackWeeks'
+    // watermark serves for how far back a pull searches, just for how often
+    // one runs at all.
+    fun scheduleSync(userId: String, email: String, appPassword: String, settings: ScanSettings) {
+        if (isSyncing(userId)) return
+        val lastSynced = lastSyncedAt[userId]
+        if (lastSynced != null && Duration.between(lastSynced, Instant.now()) < Duration.ofMillis(resyncCooldownMs)) return
+        pullJobs[userId] = backgroundScope.launch {
+            try {
+                delay(pullDebounceMs)
+                pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore)
+            } catch (e: Exception) {
+                // Best-effort - a transient IMAP failure shouldn't leave this
+                // user stuck "syncing" forever (see isSyncing above); the
+                // next eligible GET /inbox just retries. Never surfaced to
+                // the user today - no manual retry/error banner for a failed
+                // pull yet, same "not built here yet" gap as message
+                // processing's own FAILED state predates a manual retry.
+            } finally {
+                lastSyncedAt[userId] = Instant.now()
+            }
+            // Runs whether the pull above succeeded or not, so a message left
+            // PENDING by an earlier successful pull still gets processed even
+            // if this particular pull attempt failed.
+            scheduleProcessing()
         }
     }
 
@@ -96,13 +182,16 @@ fun Route.inboxRoutes(
             return@get
         }
 
-        pullAndStoreNewMessages(user.email, appPassword, settings, gmailClient, messageStore, scanStateStore)
-        scheduleProcessing()
+        scheduleSync(userId, user.email, appPassword, settings)
 
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
         val allActionItems = actionItemStore.getAll()
         val actionItemsByMessage = allActionItems.groupBy { it.sourceMessageId }
+        val today = LocalDate.now(ZoneOffset.UTC).toString()
+        val (pastActionItems, upcomingActionItems) = allActionItems
+            .filterNot { it.dismissed }
+            .partition { it.isPastDue(today) }
         val processedWithNoActionItems = messages.filter {
             it.status == MessageStatus.PROCESSED && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
         }
@@ -112,7 +201,9 @@ fun Route.inboxRoutes(
             FreeMarkerContent(
                 "inbox.ftl",
                 mapOf(
-                    "dateGroups" to buildDateGroups(allActionItems, messagesById),
+                    "syncing" to isSyncing(userId),
+                    "dateGroups" to buildDateGroups(upcomingActionItems, messagesById),
+                    "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
                     "noActionMessages" to processedWithNoActionItems.map { mapOf("subject" to it.subject, "summary" to it.summary) },
                     "failedMessages" to failedMessages.map { mapOf("subject" to it.subject, "reason" to it.failureReason) },
@@ -120,6 +211,42 @@ fun Route.inboxRoutes(
                 ) + navModel + call.currentUserModel()
             )
         )
+    }
+
+    // Deliberately unprominent (see nav.ftl's nav-link-subtle) - a review
+    // list for action items dismissed from the main /inbox view (see
+    // POST .../dismiss below), not a page either household account needs to
+    // visit often. Grouped the same way as the main page's upcoming section
+    // (buildDateGroups) rather than the flat list past-events uses - there's
+    // no urgency ordering to preserve here, and the date headings are still
+    // useful context for "what was this."
+    get("/inbox/dismissed") {
+        val messages = messageStore.getAll()
+        val messagesById = messages.associateBy { it.id }
+        val dismissedItems = actionItemStore.getAll().filter { it.dismissed }
+        call.respond(
+            FreeMarkerContent(
+                "dismissed.ftl",
+                mapOf(
+                    "dateGroups" to buildDateGroups(dismissedItems, messagesById),
+                    "activeNav" to "dismissed"
+                ) + call.currentUserModel()
+            )
+        )
+    }
+
+    // Dismiss always redirects back to /inbox (only ever posted from there)
+    // and restore back to /inbox/dismissed (only ever posted from there) -
+    // simpler and safer than trusting a Referer header for the redirect
+    // target.
+    post("/inbox/action-items/{id}/dismiss") {
+        call.parameters["id"]?.let { actionItemStore.dismiss(it) }
+        call.respondRedirect("/inbox")
+    }
+
+    post("/inbox/action-items/{id}/restore") {
+        call.parameters["id"]?.let { actionItemStore.restore(it) }
+        call.respondRedirect("/inbox/dismissed")
     }
 
     get("/inbox/settings") {
@@ -139,16 +266,17 @@ fun Route.inboxRoutes(
         )
     }
 
-    // Polled by inbox.ftl's processing banner (see app.js) while pendingCount
-    // > 0 at page load - lets a message that finishes processing after the
-    // page rendered show up without a manual reload, same pattern as
-    // foodie's GET /recipe/status.
+    // Polled by inbox.ftl's banner (see app.js) while syncing is true or
+    // pendingCount > 0 at page load - lets new mail/finished processing that
+    // happen after the page rendered show up without a manual reload, same
+    // pattern as foodie's GET /recipe/status.
     get("/inbox/status") {
         val messages = messageStore.getAll()
         val actionItemsByMessage = actionItemStore.getAll().groupBy { it.sourceMessageId }
         call.respond(
             InboxStatusResponse(
                 pending = messages.count { it.status == MessageStatus.PENDING },
+                syncing = pullJobs.values.any { it.isActive },
                 messages = messages.filter { it.status == MessageStatus.PROCESSED }.map { message ->
                     InboxMessageSummary(
                         id = message.id,
@@ -253,6 +381,21 @@ private fun ActionItem.dateKeyAndTime(message: EmailMessage?): Pair<String, Stri
     return fallbackKey to null
 }
 
+// Splits the main page's active (non-dismissed) action items into "Past
+// events" vs. the upcoming date-groups above it - the maintainer's ask for a
+// third section between the two that already existed, for items whose known
+// due date has already gone by and are "likely to be dismissed... soon"
+// rather than something to still act on. Only items with an actual dueDate
+// from Gemini can be "past" - an item with no date at all falls back to its
+// message's sent date for grouping (see dateKeyAndTime above), which says
+// nothing about whether it's still actionable, so those stay in the
+// upcoming section unchanged.
+private fun ActionItem.isPastDue(today: String): Boolean {
+    val raw = date ?: return false
+    if (raw.length < 10) return false
+    return raw.take(10) < today
+}
+
 private fun formatGroupHeading(dateKey: String): String =
     runCatching { LocalDate.parse(dateKey).format(groupHeadingFormatter) }.getOrDefault(dateKey)
 
@@ -274,6 +417,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
             "displayDate" to formatGroupHeading(dateKey),
             "items" to entries.map { dated ->
                 mapOf(
+                    "id" to dated.item.id,
                     "title" to dated.item.title,
                     "description" to dated.item.description,
                     "date" to dated.item.date,
@@ -286,3 +430,24 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
         )
     }
 }
+
+// The Past events section is a flat list rather than grouped-by-date like
+// buildDateGroups above - these items already had their date heading's
+// moment come and go, so re-emphasizing exactly which day each one was due
+// isn't useful the way it is for what's still upcoming. Sorted most-recently
+// -due first (a date string still sorts correctly as a string here, same
+// reasoning as buildDateGroups' sortedBy on the raw key) so the items
+// closest to becoming worth dismissing sit at the top.
+private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> =
+    actionItems.sortedByDescending { it.date }.map { item ->
+        val message = messagesById[item.sourceMessageId]
+        mapOf(
+            "id" to item.id,
+            "title" to item.title,
+            "description" to item.description,
+            "date" to item.date,
+            "subject" to (message?.subject ?: ""),
+            "from" to (message?.from ?: ""),
+            "summary" to (message?.summary ?: "")
+        )
+    }

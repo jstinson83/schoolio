@@ -16,12 +16,12 @@
   });
 })();
 
-// Inbox page (inbox.ftl) - poll while any message is still PENDING. Action
-// items are grouped by date server-side (see InboxRoutes.kt's
-// buildDateGroups), so there's no single per-message DOM node left to patch
-// in place the way this used to - instead, just reload once nothing's
-// pending, which re-renders the page with whatever finished processing
-// already correctly grouped.
+// Inbox page (inbox.ftl) - poll while a Gmail pull is still syncing or any
+// message is still PENDING. Action items are grouped by date server-side
+// (see InboxRoutes.kt's buildDateGroups), so there's no single per-message
+// DOM node left to patch in place the way this used to - instead, just
+// reload once both are done, which re-renders the page with whatever new
+// mail/finished processing already correctly grouped.
 (function () {
   const processingBanner = document.getElementById('processingBanner');
   if (!processingBanner) return;
@@ -32,13 +32,15 @@
     try {
       const res = await fetch('/inbox/status');
       const data = await res.json();
-      if (data.pending === 0) {
+      if (!data.syncing && data.pending === 0) {
         clearInterval(inboxPoll);
         window.location.reload();
         return;
       }
       if (bannerText) {
-        bannerText.textContent = data.pending === 1 ? 'Processing 1 message…' : `Processing ${data.pending} messages…`;
+        bannerText.textContent = data.syncing
+          ? 'Checking your inbox for new mail…'
+          : (data.pending === 1 ? 'Processing 1 message…' : `Processing ${data.pending} messages…`);
       }
     } catch (e) {
       // Best effort - a failed poll just tries again next tick.

@@ -10,6 +10,7 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.testing.*
 import kotlinx.coroutines.delay
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.time.Instant
 
@@ -51,12 +52,19 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
         private set
     var lastSinceUsed: Instant? = null
         private set
+    // Lets a test prove a *second* real pull actually happened (not just
+    // that its eventual state looks the same as after one pull) - useful
+    // now that GET /inbox's resync cooldown (see InboxRoutes.kt) means a
+    // second GET doesn't necessarily trigger a second call on its own.
+    var searchCallCount = 0
+        private set
 
     override suspend fun searchMessages(email: String, appPassword: String, senders: List<String>, since: Instant): List<GmailMessage> {
         lastEmailUsed = email
         lastAppPasswordUsed = appPassword
         lastSendersUsed = senders
         lastSinceUsed = since
+        searchCallCount++
         return messages
     }
 }
@@ -104,6 +112,16 @@ class FakeActionItemRepository : ActionItemRepository {
     override suspend fun addAll(items: List<ActionItem>) {
         this.items.addAll(items)
     }
+
+    override suspend fun dismiss(id: String) {
+        val index = items.indexOfFirst { it.id == id }
+        if (index >= 0) items[index] = items[index].copy(dismissed = true)
+    }
+
+    override suspend fun restore(id: String) {
+        val index = items.indexOfFirst { it.id == id }
+        if (index >= 0) items[index] = items[index].copy(dismissed = false)
+    }
 }
 
 class FakeScanStateRepository(initial: Map<String, Instant> = emptyMap()) : ScanStateRepository {
@@ -135,29 +153,50 @@ class FakeGeminiClient(
     }
 }
 
-// Polls messageStore (same shape as foodie's awaitEditResolved) until every
-// message has left PENDING - the debounced processing pass runs on
-// Application.kt's module-level backgroundScope, a different coroutine
-// context than the test itself, so a test can't just assume it's done the
-// moment its triggering request (GET /inbox) returns.
-suspend fun awaitMessagesProcessed(messageStore: MessageRepository) {
-    repeat(100) {
-        if (messageStore.getPending().isEmpty()) return
-        delay(20)
+// Generic poll loop (same shape foodie's awaitEditResolved uses) - both the
+// Gmail pull and the debounced Gemini processing pass run on Application.kt's
+// module-level backgroundScope, a different coroutine context than the test
+// itself, so a test can't just assume either is done the moment its
+// triggering request (GET /inbox) returns.
+suspend fun awaitCondition(failureMessage: String, timeoutIterations: Int = 150, intervalMs: Long = 20, predicate: suspend () -> Boolean) {
+    repeat(timeoutIterations) {
+        if (predicate()) return
+        delay(intervalMs)
     }
-    error("Messages never finished processing")
+    error(failureMessage)
 }
+
+// Waits for at least [expectedCount] messages to have been pulled AND left
+// PENDING. The expectedCount check matters now that the Gmail pull itself is
+// backgrounded (see InboxRoutes.kt's scheduleSync) - right after GET /inbox
+// returns, the message store can still be completely empty (nothing pulled
+// yet), which would otherwise make the old "getPending().isEmpty()" check
+// vacuously true before the pull has even run.
+suspend fun awaitMessagesProcessed(messageStore: MessageRepository, expectedCount: Int = 1) =
+    awaitCondition("Messages never finished pulling/processing") {
+        val all = messageStore.getAll()
+        all.size >= expectedCount && all.none { it.status == MessageStatus.PENDING }
+    }
 
 // Same polling shape as awaitMessagesProcessed, for a test that specifically
 // needs to observe a message reach FAILED (which getPending() alone can't
 // distinguish from PROCESSED, since both leave PENDING).
-suspend fun awaitMessageStatus(messageStore: MessageRepository, id: String, status: MessageStatus) {
-    repeat(100) {
-        if (messageStore.getAll().find { it.id == id }?.status == status) return
-        delay(20)
+suspend fun awaitMessageStatus(messageStore: MessageRepository, id: String, status: MessageStatus) =
+    awaitCondition("Message $id never reached status $status") {
+        messageStore.getAll().find { it.id == id }?.status == status
     }
-    error("Message $id never reached status $status")
-}
+
+// Polls GET /inbox/status until neither a Gmail pull nor Gemini processing
+// is in flight for anyone - the single source of truth app.js's own banner
+// polls (see InboxRoutes.kt's InboxStatusResponse), so tests that just need
+// "the background work triggered by my last GET /inbox is done" (regardless
+// of exactly how many messages that involved) can wait on it directly
+// instead of reasoning about messageStore state.
+suspend fun HttpClient.awaitInboxSettled() =
+    awaitCondition("Inbox never finished syncing/processing") {
+        val status = Json.decodeFromString<InboxStatusResponse>(get("/inbox/status").bodyAsText())
+        !status.syncing && status.pending == 0
+    }
 
 // Stands in for Google's OAuth token/userinfo endpoints, same shape as
 // foodie's fakeGoogleOAuthClient - lets AuthTest drive the real
@@ -206,10 +245,20 @@ fun ApplicationTestBuilder.testModule(
     messageStore: MessageRepository = FakeMessageRepository(),
     actionItemStore: ActionItemRepository = FakeActionItemRepository(),
     scanStateStore: ScanStateRepository = FakeScanStateRepository(),
-    // Most tests want processing to happen practically immediately rather
-    // than waiting out the real production debounce - see
-    // awaitMessagesProcessed's doc comment for how a test then observes it.
-    inboxProcessDebounceMs: Long = 10L
+    // Most tests want the pull and processing steps to happen practically
+    // immediately rather than waiting out the real production debounces -
+    // see awaitMessagesProcessed's doc comment for how a test then observes
+    // it.
+    inboxProcessDebounceMs: Long = 10L,
+    inboxPullDebounceMs: Long = 10L,
+    // Deliberately much longer than any single test's runtime (unlike the
+    // debounces above) - most tests pull once, then re-fetch /inbox to check
+    // rendered content, and that second GET shouldn't itself kick off (and
+    // show the "checking" banner for) another real pull - see
+    // InboxRoutes.kt's scheduleSync doc comment on why the cooldown exists
+    // at all. Tests that specifically exercise a second real pull (re-pull
+    // dedup, watermark advancement) pass 0 to bypass it.
+    inboxResyncCooldownMs: Long = 600_000L
 ) {
     application {
         module(
@@ -224,7 +273,9 @@ fun ApplicationTestBuilder.testModule(
             messageStore = messageStore,
             actionItemStore = actionItemStore,
             scanStateStore = scanStateStore,
-            inboxProcessDebounceMs = inboxProcessDebounceMs
+            inboxProcessDebounceMs = inboxProcessDebounceMs,
+            inboxPullDebounceMs = inboxPullDebounceMs,
+            inboxResyncCooldownMs = inboxResyncCooldownMs
         )
     }
 }

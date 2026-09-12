@@ -114,6 +114,27 @@ h1, h2, h3 {
     opacity: 1;
 }
 
+/* Deliberately unprominent (see nav.ftl) - a way to get to dismissed action
+   items without it competing with Inbox/Settings for attention. */
+.nav-link-subtle {
+    font-size: 0.75rem;
+    font-weight: 500;
+    opacity: 0.55;
+    padding: 0.45rem 0.6rem;
+}
+
+.nav-link-subtle:hover {
+    opacity: 0.85;
+    background: transparent;
+}
+
+.nav-link-subtle.active {
+    background: transparent;
+    color: var(--nav-text);
+    opacity: 1;
+    text-decoration: underline;
+}
+
 .app-nav-signout {
     margin: 0;
 }
@@ -309,16 +330,45 @@ h1, h2, h3 {
     font-size: 0.8125rem;
 }
 
-.other-updates, .failed-messages {
+.other-updates, .failed-messages, .past-events {
     margin-bottom: 1.5rem;
 }
 
-.other-updates h2, .failed-messages h2 {
+.other-updates h2, .failed-messages h2, .past-events h2 {
     font-size: 1.05rem;
     color: var(--accent);
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.35rem;
     margin: 0 0 0.5rem;
+}
+
+/* Past events/dismissed items are no longer front-and-center to act on -
+   muted so they visually read as "lower priority, headed for Dismiss." */
+.action-item-past, .action-item-dismissed {
+    opacity: 0.75;
+}
+
+.dismiss-form {
+    margin: 0.5rem 0 0;
+}
+
+.btn-dismiss {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    background: #fff;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-dismiss:hover {
+    background: #f2f4f8;
+    color: var(--text);
 }
 
 .pending-list {
