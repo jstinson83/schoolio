@@ -162,6 +162,30 @@ Worth checking there for precedent before inventing a new pattern here.
   themselves, so persisting it in Firestore was fine, unlike (say) caching
   extracted email content, which isn't done anywhere yet.
 
+## PWA support (decided)
+
+Installable, same pattern as `foodie`: `manifest.json` + `sw.js`
+(`backend/src/main/resources/static/`), registered from `app.js`. Unlike
+`foodie`, there's only one icon asset — `logo.svg` — used directly as the
+favicon, the manifest icon (`sizes: "any"`, `type: "image/svg+xml"`), and
+the `apple-touch-icon` link, rather than maintaining a set of exported PNGs
+at fixed sizes. Simpler for a two-person app, at the cost of one known gap:
+iOS Safari doesn't support SVG for `apple-touch-icon` (unlike Chrome/
+Android, which does support SVG manifest icons) — an iOS "Add to Home
+Screen" install falls back to a screenshot instead of the logo. Worth
+revisiting (export a `logo-180.png` or similar just for that one link tag)
+if either household member actually installs it on iOS; not worth the
+extra asset otherwise.
+
+`sw.js` only cache-firsts the static, account-agnostic shell
+(`css/base.css`, `app.js`, `manifest.json`, `logo.svg`) — unlike `foodie`,
+it does *not* also cache `/inbox` (or any other route) for offline
+viewing. `foodie`'s `RUNTIME_PATHS`/`RUNTIME_CACHE_NAME` pattern exists to
+support viewing a household's grocery list with zero connectivity, which
+doesn't have an equivalent need here yet; see `foodie`'s CLAUDE.md
+"Service worker caching (PWA)" section for that pattern if offline inbox
+viewing ever becomes a goal.
+
 ## Not yet decided / open questions
 
 - Calendar target: push to Google Calendar directly, or maintain an
