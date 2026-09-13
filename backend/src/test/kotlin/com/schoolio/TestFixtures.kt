@@ -41,6 +41,10 @@ class FakeUserRepository : UserRepository {
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
         usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
+
+    override suspend fun saveCalendarAppPassword(id: String, appPassword: String) {
+        usersById[id]?.let { usersById[id] = it.copy(calendarAppPassword = appPassword) }
+    }
 }
 
 class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {

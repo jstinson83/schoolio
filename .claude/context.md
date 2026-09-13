@@ -186,8 +186,46 @@ doesn't have an equivalent need here yet; see `foodie`'s CLAUDE.md
 "Service worker caching (PWA)" section for that pattern if offline inbox
 viewing ever becomes a goal.
 
+## Calendar pull (in progress)
+
+Decided: pull from Google Calendar as a second input source alongside Gmail,
+via **CalDAV + a separate Google app password**, not the Calendar REST API/
+OAuth — same reasoning as the Gmail IMAP decision above (avoids OAuth scope/
+verification complexity; app passwords aren't scoped per-protocol, so the
+same mechanism that unlocked IMAP access also unlocks CalDAV). Kept as a
+distinct field/credential from Gmail's rather than reusing it, so either can
+be rotated/revoked independently — see `User.calendarAppPassword`
+(`UserStore.kt`) and its own `/inbox/connect-calendar` form on the settings
+page (`settings.ftl`, `GET`/`POST /inbox/settings`), same shape as the
+existing Gmail connect form.
+
+`CalendarClient.kt` (`CalDavCalendarClient`) exists as a **standalone,
+documented stub**: real CalDAV REPORT/calendar-query request construction
+and Basic Auth (tested against a fabricated response in
+`CalDavCalendarClientTest` via MockEngine, not a live Google account) plus a
+hand-rolled iCalendar VEVENT parser, but it is **not yet wired into
+`InboxRoutes.kt`'s pull pipeline** — nothing calls `fetchEvents` today.
+Known parsing gaps documented on the class itself: no RRULE/recurring-event
+expansion, no all-day (`VALUE=DATE`) events, no TZID-qualified local times —
+only the plain UTC-timestamped case is handled.
+
+Design point once wiring happens: a calendar event already carries
+structured fields (title, start/end) natively, so it likely **skips Gemini
+extraction** entirely (unlike an `EmailMessage`, which needs the LLM step to
+find a date/title in free text) and turns directly into an `ActionItem`-
+shaped record. The background-pull infra (`pullJobs`/`lastSyncedAt`, resync
+cooldown, `syncing` banner) is source-agnostic and expected to extend
+directly to a second per-user Calendar pull job.
+
 ## Not yet decided / open questions
 
+- **Email/calendar dedup**: the maintainer wants an email and a calendar
+  event describing the same thing (e.g. a permission-slip email for an
+  event already on the calendar) deduped rather than shown as two separate
+  timeline entries — explicitly parked, no matching logic built yet.
+  Whatever schema lands for calendar-derived items should leave a
+  provenance seam for this (comparable to `ActionItem.sourceMessageId`)
+  so dedup can slot in later without a rework.
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation

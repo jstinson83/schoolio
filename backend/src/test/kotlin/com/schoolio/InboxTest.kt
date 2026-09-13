@@ -223,6 +223,43 @@ class InboxTest {
         assertEquals("original-password", userStore.find(TEST_SUB)?.gmailAppPassword)
     }
 
+    // Same shape as testConnectingGmailSavesAppPasswordAndEnablesScanning,
+    // for the separate Calendar app password (User.calendarAppPassword) -
+    // redirects back to /inbox/settings rather than /inbox since nothing
+    // reads this field yet (see CalendarClient.kt), unlike Gmail's connect
+    // form which kicks off a scan.
+    @Test
+    fun testConnectingCalendarSavesAppPassword() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+
+        val connectResponse = client.submitForm(
+            url = "/inbox/connect-calendar",
+            formParameters = Parameters.build { append("appPassword", "new-calendar-password") }
+        )
+        assertEquals(HttpStatusCode.Found, connectResponse.status)
+        assertEquals("/inbox/settings", connectResponse.headers[HttpHeaders.Location])
+        assertEquals("new-calendar-password", userStore.find(TEST_SUB)?.calendarAppPassword)
+    }
+
+    // Same "blank submission doesn't wipe out an existing value" behavior as
+    // Gmail's connect form.
+    @Test
+    fun testConnectingCalendarWithBlankPasswordDoesNotOverwriteExisting() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+        userStore.saveCalendarAppPassword(TEST_SUB, "original-calendar-password")
+
+        client.submitForm(
+            url = "/inbox/connect-calendar",
+            formParameters = Parameters.build { append("appPassword", "") }
+        )
+
+        assertEquals("original-calendar-password", userStore.find(TEST_SUB)?.calendarAppPassword)
+    }
+
     @Test
     fun testInboxPromptsToConfigureSendersWhenNoneSet() = testApplication {
         val gmailClient = FakeGmailClient()
@@ -304,6 +341,27 @@ class InboxTest {
         userStore.saveGmailAppPassword(TEST_SUB, "some-app-password")
         val connectedBody = client.get("/inbox/settings").bodyAsText()
         assertTrue(connectedBody.contains("already connected"))
+    }
+
+    // Same "already connected" state, tracked independently for the Calendar
+    // app password field (see UserStore.kt's doc comment on why it's a
+    // separate field from gmailAppPassword).
+    @Test
+    fun testSettingsPageShowsCalendarAppPasswordStateIndependentlyOfGmail() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+
+        val disconnectedBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(0, Regex("already connected").findAll(disconnectedBody).count())
+
+        userStore.saveGmailAppPassword(TEST_SUB, "some-gmail-app-password")
+        val gmailOnlyBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(1, Regex("already connected").findAll(gmailOnlyBody).count())
+
+        userStore.saveCalendarAppPassword(TEST_SUB, "some-calendar-app-password")
+        val bothConnectedBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(2, Regex("already connected").findAll(bothConnectedBody).count())
     }
 
     // An action item whose known due date has already gone by moves to the

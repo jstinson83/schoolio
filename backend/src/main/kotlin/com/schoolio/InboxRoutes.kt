@@ -275,6 +275,7 @@ fun Route.inboxRoutes(
                     "sendersText" to settings.schoolSenders.joinToString(", "),
                     "lookbackWeeks" to settings.lookbackWeeks,
                     "hasAppPassword" to (user?.gmailAppPassword != null),
+                    "hasCalendarAppPassword" to (user?.calendarAppPassword != null),
                     "activeNav" to "settings"
                 ) + call.currentUserModel()
             )
@@ -322,6 +323,19 @@ fun Route.inboxRoutes(
             userStore.saveGmailAppPassword(userId, appPassword)
         }
         call.respondRedirect("/inbox")
+    }
+
+    // Same shape as /inbox/connect-gmail above, for the separate Calendar app
+    // password (User.calendarAppPassword) - not yet consumed by any pull
+    // pipeline (CalendarClient.kt exists standalone), but the settings page
+    // lets a signed-in user set/rotate it now, ahead of that wiring.
+    post("/inbox/connect-calendar") {
+        val userId = call.requireUserId()
+        val appPassword = call.receiveParameters()["appPassword"]?.trim()
+        if (!appPassword.isNullOrEmpty()) {
+            userStore.saveCalendarAppPassword(userId, appPassword)
+        }
+        call.respondRedirect("/inbox/settings")
     }
 
     post("/inbox/settings") {

@@ -31,6 +31,20 @@
         </section>
 
         <section class="settings-section">
+            <h2>Calendar connection</h2>
+            <form method="post" action="/inbox/connect-calendar" class="settings-form">
+                <label>
+                    Calendar app password
+                    <input type="password" name="appPassword" placeholder="<#if hasCalendarAppPassword>already connected - enter a new one to replace it<#else>paste your app password here</#if>" autocomplete="off">
+                </label>
+                <p class="field-hint">Generate a separate one at
+                    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
+                    (requires 2-Step Verification) - use a different app password than the one above, so Gmail and Calendar access can be rotated independently.</p>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </form>
+        </section>
+
+        <section class="settings-section">
             <h2>School senders</h2>
             <form method="post" action="/inbox/settings" class="settings-form">
                 <label>

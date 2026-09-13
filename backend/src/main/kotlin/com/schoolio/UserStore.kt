@@ -30,6 +30,14 @@ data class User(
     // decrypts it back out, so nothing above the persistence layer needs to
     // know encryption is happening at all.
     val gmailAppPassword: String? = null,
+    // Same shape as gmailAppPassword above, entered via a separate
+    // /inbox/connect-calendar form - a distinct Google app password (not the
+    // same string) even though the same account/2-Step-Verification setup
+    // produces both, since app passwords aren't scoped per-protocol and
+    // keeping them in separate fields lets one be rotated/revoked without
+    // touching the other. Not yet read by any pull pipeline - CalDavCalendarClient
+    // (CalendarClient.kt) exists but isn't wired into InboxRoutes.kt yet.
+    val calendarAppPassword: String? = null,
     val createdAt: Instant? = null
 )
 
@@ -37,6 +45,7 @@ interface UserRepository {
     suspend fun findOrCreateByGoogle(googleSub: String, email: String, name: String): User
     suspend fun find(id: String): User?
     suspend fun saveGmailAppPassword(id: String, appPassword: String)
+    suspend fun saveCalendarAppPassword(id: String, appPassword: String)
 }
 
 // Uses ApiFuture.get() (blocking the calling thread inside a suspend fun),
@@ -78,6 +87,10 @@ class FirestoreUserStore(
         collection.document(id).update("gmailAppPassword", AppPasswordCipher.encrypt(appPassword, appPasswordEncryptionKey)).get()
     }
 
+    override suspend fun saveCalendarAppPassword(id: String, appPassword: String) {
+        collection.document(id).update("calendarAppPassword", AppPasswordCipher.encrypt(appPassword, appPasswordEncryptionKey)).get()
+    }
+
     private fun toUser(id: String, data: Map<String, Any?>): User = User(
         id = id,
         googleSub = data["googleSub"] as? String ?: id,
@@ -91,6 +104,9 @@ class FirestoreUserStore(
         // every find() call - and therefore every signed-in page load - on
         // one bad field.
         gmailAppPassword = (data["gmailAppPassword"] as? String)?.let {
+            runCatching { AppPasswordCipher.decrypt(it, appPasswordEncryptionKey) }.getOrNull()
+        },
+        calendarAppPassword = (data["calendarAppPassword"] as? String)?.let {
             runCatching { AppPasswordCipher.decrypt(it, appPasswordEncryptionKey) }.getOrNull()
         },
         createdAt = (data["createdAt"] as? Timestamp)?.let { Instant.ofEpochSecond(it.seconds, it.nanos.toLong()) }
