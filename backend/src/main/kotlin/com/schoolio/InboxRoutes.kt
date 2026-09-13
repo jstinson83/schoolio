@@ -14,9 +14,21 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+
+// Every "what day/time is this" computation across the app - calendar event
+// display, calendar all-day-event date anchoring (CalendarClient.kt), the
+// email-fallback date-grouping heading, and "is this past due" - uses this
+// single zone rather than a mix of UTC and local, so a date never disagrees
+// with itself between sections (e.g. a 9pm Eastern event landing under the
+// wrong day's heading because it was formatted in UTC, where it's already
+// past midnight). Hardcoded rather than configurable - this is a two-person
+// household app for one specific household, not a multi-timezone product;
+// ZoneId (not a fixed ZoneOffset) so DST transitions (EST/EDT) are handled
+// automatically instead of drifting an hour off twice a year.
+val HOUSEHOLD_ZONE: ZoneId = ZoneId.of("America/New_York")
 
 // How long to wait after a Gmail pull before running Gemini over whatever's
 // PENDING - long enough that a settings save (which redirects straight back
@@ -233,7 +245,7 @@ fun Route.inboxRoutes(
         val messagesById = messages.associateBy { it.id }
         val allActionItems = actionItemStore.getAll()
         val actionItemsByMessage = allActionItems.groupBy { it.sourceMessageId }
-        val today = LocalDate.now(ZoneOffset.UTC).toString()
+        val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
         val (pastActionItems, upcomingActionItems) = allActionItems
             .filterNot { it.dismissed }
             .partition { it.isPastDue(today) }
@@ -461,8 +473,8 @@ private suspend fun pullAndStoreCalendarEvents(
     }
 }
 
-private val timedEventDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm").withZone(ZoneOffset.UTC)
-private val allDayDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC)
+private val timedEventDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm").withZone(HOUSEHOLD_ZONE)
+private val allDayDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(HOUSEHOLD_ZONE)
 
 private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
 
@@ -479,7 +491,7 @@ private fun ActionItem.dateKeyAndTime(message: EmailMessage?): Pair<String, Stri
     if (raw != null && raw.length >= 10) {
         return raw.take(10) to raw.drop(10).removePrefix("T").ifEmpty { null }
     }
-    val fallbackKey = message?.receivedAt?.atZone(ZoneOffset.UTC)?.toLocalDate()?.toString() ?: "unknown-date"
+    val fallbackKey = message?.receivedAt?.atZone(HOUSEHOLD_ZONE)?.toLocalDate()?.toString() ?: "unknown-date"
     return fallbackKey to null
 }
 

@@ -97,7 +97,68 @@ class GoogleCalendarApiClientTest {
         val allDay = events.single { it.uid == "event-2" }
         assertEquals("Teacher PD Day - No School", allDay.summary)
         assertTrue(allDay.allDay)
-        assertEquals(Instant.parse("2026-09-25T00:00:00Z"), allDay.start)
+        // Anchored at midnight HOUSEHOLD_ZONE (America/New_York), not UTC -
+        // 2026-09-25 is EDT (UTC-4) - see EventDateTime.toInstant's doc
+        // comment on why it has to match InboxRoutes.kt's formatting zone.
+        assertEquals(Instant.parse("2026-09-25T04:00:00Z"), allDay.start)
+    }
+
+    // School calendar invites are often created by forwarding/pasting an
+    // email, which drags that org's confidentiality disclaimer footer along
+    // into the description - hit for real with a bilingual English/French
+    // one (see CalendarClient.kt's stripDisclaimerFooter and CLAUDE.md's
+    // gotcha entry). Genuine content before the disclaimer is kept.
+    @Test
+    fun testFetchEventsStripsEmailDisclaimerFooterFromDescription() = runBlocking {
+        val disclaimer = "This e-mail message (including attachments, if any) is intended for the use of the individual or entity to which it is addressed and may contain information that is privileged, proprietary, confidential and exempt from disclosure."
+        val responseJson = """
+            {
+              "items": [
+                {
+                  "id": "event-1",
+                  "summary": "Field Trip - Science Museum",
+                  "description": "Please pack a lunch and wear comfortable shoes.\n\n$disclaimer",
+                  "start": {"dateTime": "2026-09-20T09:00:00-04:00"}
+                }
+              ]
+            }
+        """.trimIndent()
+        val httpClient = mockClient {
+            respond(responseJson, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+        }
+
+        val events = GoogleCalendarApiClient(httpClient, fakeCredentials())
+            .fetchEvents("test@example.com", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-30T00:00:00Z"))
+
+        assertEquals("Please pack a lunch and wear comfortable shoes.", events.single().description)
+    }
+
+    // The disclaimer is often the *entire* description (no real event
+    // content at all) - stripping it should leave null, not an empty
+    // string, so inbox.ftl's `?has_content` check hides the line instead of
+    // rendering an empty description paragraph.
+    @Test
+    fun testFetchEventsSetsDescriptionToNullWhenItsOnlyTheDisclaimer() = runBlocking {
+        val responseJson = """
+            {
+              "items": [
+                {
+                  "id": "event-1",
+                  "summary": "PTA Meeting",
+                  "description": "This email message is confidential.",
+                  "start": {"dateTime": "2026-09-20T09:00:00-04:00"}
+                }
+              ]
+            }
+        """.trimIndent()
+        val httpClient = mockClient {
+            respond(responseJson, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+        }
+
+        val events = GoogleCalendarApiClient(httpClient, fakeCredentials())
+            .fetchEvents("test@example.com", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-30T00:00:00Z"))
+
+        assertNull(events.single().description)
     }
 
     @Test

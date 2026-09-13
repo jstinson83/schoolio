@@ -262,6 +262,17 @@ duplicate *inserts* on a re-pull — it does nothing if an already-stored
 calendar event's time/title/etc. later changes upstream (rescheduled,
 renamed, cancelled). See the reconciliation entry below.
 
+**All display/grouping dates and times are Eastern (`HOUSEHOLD_ZONE` =
+`America/New_York`, `InboxRoutes.kt`), not UTC** — a `ZoneId`, not a fixed
+offset, so DST (EST/EDT) is handled automatically. Applies consistently
+everywhere a "what day/time is this" decision gets made: a calendar event's
+displayed time, an all-day event's date anchor (`CalendarClient.kt`'s
+`EventDateTime.toInstant` — has to anchor at midnight in this *same* zone,
+not UTC, or the round-trip through `InboxRoutes.kt`'s formatter would shift
+the date by a day), the email-fallback date-grouping heading, and "is this
+past due" (`today`). Deliberately not configurable — this is a two-person
+household app for one specific household, not a multi-timezone product.
+
 ## Not yet decided / open questions
 
 - **Cross-source reconciliation (update vs. duplicate)**: realized this is

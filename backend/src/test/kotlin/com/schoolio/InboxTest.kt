@@ -256,6 +256,34 @@ class InboxTest {
         assertEquals(TEST_EMAIL, calendarClient.lastCalendarIdUsed)
     }
 
+    // The point of HOUSEHOLD_ZONE (InboxRoutes.kt) - a calendar event's
+    // stored UTC instant should display in Eastern time, not raw UTC, so a
+    // 9am Eastern event doesn't show up looking like an afternoon one.
+    @Test
+    fun testCalendarEventTimeDisplaysInEasternNotUtc() = testApplication {
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1", summary = "Morning Assembly", description = null,
+                    start = Instant.parse("2026-09-20T13:00:00Z"), // 9am Eastern (EDT)
+                    allDay = false, end = null
+                )
+            )
+        )
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        assertEquals("2026-09-20T09:00", actionItemStore.items.single().date)
+    }
+
     // calendarClient == null means Calendar isn't configured on this
     // deployment at all (no CALENDAR_SERVICE_ACCOUNT_KEY - see
     // Application.kt) - /inbox should still work fine on email alone, same
