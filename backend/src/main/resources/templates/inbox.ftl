@@ -15,6 +15,7 @@
     <#include "nav.ftl">
     <main class="inbox">
         <h1>Action items</h1>
+        <p class="inbox-actions"><a href="/inbox/import-photo" class="btn btn-secondary">Import from a photo</a></p>
 
         <#if needsGmailAccess??>
             <p>Gmail isn't connected yet - <a href="/inbox/settings">connect it in Settings</a> to see your recent messages here.</p>
@@ -53,6 +54,8 @@
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <#if action.subject?has_content>
                                     <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <#elseif action.photoImport>
+                                    <p class="action-source">From a photo you uploaded</p>
                                 <#else>
                                     <p class="action-source">From your calendar</p>
                                 </#if>
@@ -78,6 +81,8 @@
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <#if action.subject?has_content>
                                     <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <#elseif action.photoImport>
+                                    <p class="action-source">From a photo you uploaded</p>
                                 <#else>
                                     <p class="action-source">From your calendar</p>
                                 </#if>

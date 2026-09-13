@@ -120,6 +120,9 @@ class InboxTest {
         val geminiClient = object : GeminiClient {
             override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction =
                 error("Gemini is down")
+
+            override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> =
+                error("Gemini is down")
         }
         val userStore = FakeUserRepository()
         val messageStore = FakeMessageRepository()

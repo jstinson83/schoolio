@@ -277,6 +277,42 @@ the date by a day), the email-fallback date-grouping heading, and "is this
 past due" (`today`). Deliberately not configurable — this is a two-person
 household app for one specific household, not a multi-timezone product.
 
+## Calendar photo import (decided, live)
+
+A third input source alongside email and the Calendar API pull, for events
+that only exist on paper/whiteboard - a physical wall calendar, a printed
+school schedule, a note on a whiteboard. `GET /inbox/import-photo` shows an
+upload form (`accept="image/*" capture="environment"` on the file input, so
+mobile browsers open the camera directly rather than a file picker - "take a
+photo" is the primary use case). `POST /inbox/import-photo` sends the photo
+to Gemini's vision input (`GeminiClient.extractCalendarEventsFromImage`) -
+same `generateContent` REST endpoint as the email extraction path, just with
+an `inlineData` (base64) part alongside the text prompt instead of text
+alone, and its own response schema (`events: [{title, date, time?,
+description?}]`). The prompt anchors year-inference (a whiteboard entry like
+"Tue 9/15" with no year printed anywhere) to `HOUSEHOLD_ZONE`'s current date,
+same zone as every other "what day is it" decision in this app.
+
+**Resolves the "how much human review" open question, for this one path
+only**: unlike the Calendar API pull (structured fields straight from
+Google's own data, no review needed) or email extraction (already shown
+as-is on `/inbox`), a photo import's OCR/handwriting read is meaningfully
+more error-prone, so extracted events go to a review step
+(`import-photo-review.ftl`) - a checkbox + editable title/date/time/notes
+per row - before anything is persisted. Nothing is written to Firestore
+until `POST /inbox/import-photo/confirm` is submitted; an unchecked or
+emptied-title row is silently dropped rather than treated as an error, since
+narrowing the list down is the point of the step. Confirmed rows become
+plain `ActionItem`s via `addAll` (fresh random ids, same as the email path) -
+a one-off import has no stable id to upsert against the way a recurring
+Calendar pull does.
+
+`ActionItem.sourcePhotoImport` (boolean) marks these - the third case
+alongside `sourceMessageId`/`sourceCalendarEventId` (now "at most one" set,
+not "exactly one"), so `inbox.ftl`/`dismissed.ftl` can show "From a photo you
+uploaded" instead of misreporting "From your calendar" for an item that came
+from neither pipeline.
+
 ## Not yet decided / open questions
 
 - **Cross-source reconciliation (update vs. duplicate)**: realized this is
@@ -303,7 +339,10 @@ household app for one specific household, not a multi-timezone product.
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
-  (auto-create vs. confirm-first).
+  (auto-create vs. confirm-first) - decided one way (confirm-first) for the
+  photo-import path specifically, see "Calendar photo import" above; the
+  email and Calendar-API paths still show extraction results directly with
+  no review step, so this is still open for those two.
 - No manual retry for a FAILED message yet (see "Message pull/processing
   pipeline" below) — today the only way to retry is whatever naturally
   re-triggers `pullAndStoreNewMessages` (a page reload), and that never
@@ -439,10 +478,12 @@ issuing one IMAP search covering every sender in that single window.
   far: `GET /` (`splash.ftl` — deploy-confirmation revision display, plus
   sign-in/sign-out), `GET /auth/google` + `GET /auth/google/callback` +
   `POST /logout` (`Auth.kt`), `GET /inbox` + `POST /inbox/connect-gmail` +
-  `POST /inbox/settings` (`InboxRoutes.kt`, all three gated behind
+  `POST /inbox/settings`, `GET /inbox/import-photo` + `POST
+  /inbox/import-photo` + `POST /inbox/import-photo/confirm`
+  (`InboxRoutes.kt`, all gated behind
   `authenticate(USER_SESSION_PROVIDER_NAME)` — the main scan-and-extract
-  flow, its Gmail app-password form, and its sender/lookback settings form,
-  see above).
+  flow, its Gmail app-password form, its sender/lookback settings form, and
+  the calendar-photo-import upload/review/confirm flow, see above).
 - **Env vars** (Cloud Run + local `.env`/shell, not committed): 
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (a *new* OAuth 2.0 Client ID
   under the shared `foodie-503510` project — not foodie's own client, since

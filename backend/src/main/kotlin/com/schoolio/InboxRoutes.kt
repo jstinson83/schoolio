@@ -1,10 +1,12 @@
 package com.schoolio
 
+import io.ktor.http.content.*
 import io.ktor.server.application.*
 import io.ktor.server.freemarker.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.utils.io.core.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -17,6 +19,13 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+
+// Hard cap on an uploaded calendar photo (see POST /inbox/import-photo) - a
+// generous ceiling for an actual phone-camera photo (a few MB), just there
+// to reject something absurd (a misdirected large file) before it's
+// base64-encoded and sent to Gemini, not a real capacity limit for a
+// two-person app.
+const val MAX_IMPORT_PHOTO_BYTES = 15 * 1024 * 1024
 
 // Every "what day/time is this" computation across the app - calendar event
 // display, calendar all-day-event date anchoring (CalendarClient.kt), the
@@ -321,6 +330,112 @@ fun Route.inboxRoutes(
         call.respondRedirect("/inbox/dismissed")
     }
 
+    // Upload form for the photo-import feature - a photo of a physical/paper
+    // calendar, printed school schedule, or whiteboard, read by Gemini's
+    // vision input (see GeminiClient.kt's extractCalendarEventsFromImage)
+    // instead of the email/Calendar-API pipelines. accept+capture on the
+    // file input (import-photo.ftl) hints mobile browsers to open the camera
+    // directly rather than a file picker, since "take a photo" is the
+    // primary use case, not "upload an existing image."
+    get("/inbox/import-photo") {
+        call.respond(
+            FreeMarkerContent(
+                "import-photo.ftl",
+                mapOf("activeNav" to "inbox") + call.currentUserModel()
+            )
+        )
+    }
+
+    // Runs the photo through Gemini and renders a review step rather than
+    // creating action items directly - unlike the Calendar API pull (which
+    // reads structured fields straight off Google's own data), reading dates
+    // and titles off a photographed calendar is exactly the kind of
+    // error-prone OCR/handwriting read that's worth a household member's
+    // eyes before anything lands on /inbox (see context.md's "How much human
+    // review..." open question - photo import is the one path here that
+    // resolves it in favor of confirm-first). Nothing is persisted by this
+    // route; POST /inbox/import-photo/confirm below is what actually calls
+    // actionItemStore.
+    post("/inbox/import-photo") {
+        var imageBytes: ByteArray? = null
+        var mimeType: String? = null
+        call.receiveMultipart().forEachPart { part ->
+            if (part is PartData.FileItem && imageBytes == null) {
+                mimeType = part.contentType?.toString() ?: "image/jpeg"
+                imageBytes = part.provider().readBytes()
+            }
+            part.dispose()
+        }
+        val navModel = mapOf("activeNav" to "inbox") + call.currentUserModel()
+        val bytes = imageBytes
+        if (bytes == null || bytes.isEmpty()) {
+            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "Choose a photo to upload.") + navModel))
+            return@post
+        }
+        if (bytes.size > MAX_IMPORT_PHOTO_BYTES) {
+            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "That photo is too large - try a smaller one.") + navModel))
+            return@post
+        }
+        val events = try {
+            geminiClient.extractCalendarEventsFromImage(bytes, mimeType ?: "image/jpeg")
+        } catch (e: Exception) {
+            logger.warn("Photo calendar extraction failed", e)
+            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "Couldn't read that photo - try a clearer picture.") + navModel))
+            return@post
+        }
+        if (events.isEmpty()) {
+            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "No events found in that photo.") + navModel))
+            return@post
+        }
+        call.respond(
+            FreeMarkerContent(
+                "import-photo-review.ftl",
+                mapOf(
+                    "events" to events.mapIndexed { index, event ->
+                        mapOf(
+                            "index" to index,
+                            "title" to event.title,
+                            "date" to event.date,
+                            "time" to (event.time ?: ""),
+                            "description" to (event.description ?: "")
+                        )
+                    },
+                    "count" to events.size
+                ) + navModel
+            )
+        )
+    }
+
+    // Creates one ActionItem per checked/edited row from the review step
+    // above (form fields named title_0/date_0/... - see
+    // import-photo-review.ftl) - a plain addAll (fresh random ids), same
+    // "always inserts" shape as the email pipeline, since a photo import is
+    // a one-off action with no stable id to upsert against the way a
+    // recurring calendar pull has (see ActionItem.sourcePhotoImport's doc
+    // comment). A row with its checkbox unticked, or an emptied-out title,
+    // is silently skipped rather than treated as an error - editing the
+    // review list down to "just the ones I actually want" is the whole
+    // point of this step.
+    post("/inbox/import-photo/confirm") {
+        val form = call.receiveParameters()
+        val count = form["count"]?.toIntOrNull() ?: 0
+        val items = (0 until count).mapNotNull { i ->
+            if (form["include_$i"] != "on") return@mapNotNull null
+            val title = form["title_$i"]?.trim().orEmpty()
+            if (title.isEmpty()) return@mapNotNull null
+            val date = form["date_$i"]?.trim().orEmpty()
+            val time = form["time_$i"]?.trim().orEmpty()
+            ActionItem(
+                title = title,
+                description = form["description_$i"]?.trim().orEmpty(),
+                date = if (date.isEmpty()) null else if (time.isEmpty()) date else "${date}T$time",
+                sourcePhotoImport = true
+            )
+        }
+        actionItemStore.addAll(items)
+        call.respondRedirect("/inbox")
+    }
+
     get("/inbox/settings") {
         val userId = call.requireUserId()
         val user = userStore.find(userId)
@@ -538,7 +653,8 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
                     "time" to dated.time,
                     "subject" to (dated.message?.subject ?: ""),
                     "from" to (dated.message?.from ?: ""),
-                    "summary" to (dated.message?.summary ?: "")
+                    "summary" to (dated.message?.summary ?: ""),
+                    "photoImport" to dated.item.sourcePhotoImport
                 )
             }
         )
@@ -562,6 +678,7 @@ private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById
             "date" to item.date,
             "subject" to (message?.subject ?: ""),
             "from" to (message?.from ?: ""),
-            "summary" to (message?.summary ?: "")
+            "summary" to (message?.summary ?: ""),
+            "photoImport" to item.sourcePhotoImport
         )
     }

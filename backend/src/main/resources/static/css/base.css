@@ -559,3 +559,33 @@ h1, h2, h3 {
     font-size: 0.8125rem;
     margin: -0.5rem 0 1rem;
 }
+
+.inbox-actions {
+    margin: 0 0 1.25rem;
+}
+
+.photo-review-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.photo-review-item label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.photo-review-include {
+    flex-direction: row !important;
+    align-items: center;
+    gap: 0.5rem !important;
+    font-weight: 600;
+}
+
+.photo-review-date-time {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}

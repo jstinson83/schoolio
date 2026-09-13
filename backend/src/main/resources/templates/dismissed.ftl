@@ -30,7 +30,13 @@
                                     <#if action.date?has_content><span class="action-due">${action.date}</span></#if>
                                 </div>
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
-                                <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <#if action.subject?has_content>
+                                    <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                                <#elseif action.photoImport>
+                                    <p class="action-source">From a photo you uploaded</p>
+                                <#else>
+                                    <p class="action-source">From your calendar</p>
+                                </#if>
                                 <form method="post" action="/inbox/action-items/${action.id}/restore" class="dismiss-form">
                                     <button type="submit" class="btn-dismiss">Restore</button>
                                 </form>
