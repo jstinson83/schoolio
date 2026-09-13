@@ -223,6 +223,134 @@ class InboxTest {
         assertEquals("original-password", userStore.find(TEST_SUB)?.gmailAppPassword)
     }
 
+    // The point of this task: a connected Calendar's upcoming events show up
+    // in the same action-item list email-derived items do, with no Gemini
+    // step involved (see pullAndStoreCalendarEvents' doc comment) - unlike a
+    // message, a calendar event has no subject/from, so inbox.ftl falls back
+    // to "From your calendar" instead of the usual `From "<subject>"` line.
+    @Test
+    fun testInboxPullsUpcomingCalendarEventsIntoActionItemList() = testApplication {
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1",
+                    summary = "Science Fair",
+                    description = "Bring your project by 8am",
+                    start = Instant.parse("2026-09-20T13:00:00Z"),
+                    allDay = false,
+                    end = Instant.parse("2026-09-20T15:00:00Z")
+                )
+            )
+        )
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("Science Fair"))
+        assertTrue(body.contains("Bring your project by 8am"))
+        assertTrue(body.contains("From your calendar"))
+        assertEquals(TEST_EMAIL, calendarClient.lastCalendarIdUsed)
+    }
+
+    // The point of HOUSEHOLD_ZONE (InboxRoutes.kt) - a calendar event's
+    // stored UTC instant should display in Eastern time, not raw UTC, so a
+    // 9am Eastern event doesn't show up looking like an afternoon one.
+    @Test
+    fun testCalendarEventTimeDisplaysInEasternNotUtc() = testApplication {
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1", summary = "Morning Assembly", description = null,
+                    start = Instant.parse("2026-09-20T13:00:00Z"), // 9am Eastern (EDT)
+                    allDay = false, end = null
+                )
+            )
+        )
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        assertEquals("2026-09-20T09:00", actionItemStore.items.single().date)
+    }
+
+    // calendarClient == null means Calendar isn't configured on this
+    // deployment at all (no CALENDAR_SERVICE_ACCOUNT_KEY - see
+    // Application.kt) - /inbox should still work fine on email alone, same
+    // as before Calendar existed.
+    @Test
+    fun testInboxWorksNormallyWhenCalendarIsNotConfiguredAtAll() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = null)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        val response = client.get("/inbox")
+        assertEquals(HttpStatusCode.OK, response.status)
+        client.awaitInboxSettled()
+        assertTrue(client.get("/inbox").bodyAsText().contains("No messages found."))
+    }
+
+    // Re-fetching the same upcoming window on a second sync (see
+    // pullAndStoreCalendarEvents' doc comment on why there's no watermark
+    // here) must not add the same event twice - ActionItemRepository.
+    // storeIfAbsent, keyed on the event's own uid, is what prevents that.
+    @Test
+    fun testRePullingTheSameCalendarEventDoesNotDuplicateIt() = testApplication {
+        val event = CalendarEvent(
+            uid = "event-1", summary = "Science Fair", description = null,
+            start = Instant.parse("2026-09-20T13:00:00Z"), allDay = false, end = null
+        )
+        val calendarClient = FakeCalendarClient(listOf(event))
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        // Bypasses the resync cooldown - this test specifically needs a
+        // second real pull to prove it doesn't duplicate an already-stored
+        // event.
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore, inboxResyncCooldownMs = 0
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+        assertEquals(1, actionItemStore.items.size)
+
+        client.get("/inbox")
+        awaitCondition("Second calendar pull never ran") { calendarClient.fetchCallCount >= 2 }
+        client.awaitInboxSettled()
+        assertEquals(1, actionItemStore.items.size, "Re-pulling the same calendar event shouldn't duplicate it")
+    }
+
+    // CalendarClient.fetchEvents' window is a bounded lookahead, not an
+    // open-ended "since" the way Gmail's is - see CalendarClient.kt's doc
+    // comment on why an unbounded upper bound is the wrong shape for
+    // calendar. CALENDAR_LOOKAHEAD_DAYS controls exactly how wide.
+    @Test
+    fun testCalendarPullUsesABoundedLookaheadWindow() = testApplication {
+        val calendarClient = FakeCalendarClient()
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient)
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val from = calendarClient.lastFromUsed!!
+        val until = calendarClient.lastUntilUsed!!
+        assertEquals(CALENDAR_LOOKAHEAD_DAYS, java.time.Duration.between(from, until).toDays())
+    }
+
     @Test
     fun testInboxPromptsToConfigureSendersWhenNoneSet() = testApplication {
         val gmailClient = FakeGmailClient()
@@ -304,6 +432,31 @@ class InboxTest {
         userStore.saveGmailAppPassword(TEST_SUB, "some-app-password")
         val connectedBody = client.get("/inbox/settings").bodyAsText()
         assertTrue(connectedBody.contains("already connected"))
+    }
+
+    // The settings page shows the service account's email so a signed-in
+    // user knows which address to share their calendar with - there's
+    // nothing to submit (see settings.ftl), unlike the Gmail app-password
+    // form above.
+    @Test
+    fun testSettingsPageShowsCalendarServiceAccountEmailToShareWith() = testApplication {
+        testModule(calendarServiceAccountEmail = "schoolio-calendar@some-project.iam.gserviceaccount.com")
+        val client = signInFakeUser()
+
+        val body = client.get("/inbox/settings").bodyAsText()
+        assertTrue(body.contains("schoolio-calendar@some-project.iam.gserviceaccount.com"))
+    }
+
+    // A deployment with no CALENDAR_SERVICE_ACCOUNT_KEY set at all (see
+    // Application.kt) shouldn't show a stale/blank service account address -
+    // it should say the feature isn't configured.
+    @Test
+    fun testSettingsPageExplainsWhenCalendarIsNotConfiguredAtAll() = testApplication {
+        testModule(calendarClient = null, calendarServiceAccountEmail = null)
+        val client = signInFakeUser()
+
+        val body = client.get("/inbox/settings").bodyAsText()
+        assertTrue(body.contains("isn't configured on this deployment"))
     }
 
     // An action item whose known due date has already gone by moves to the

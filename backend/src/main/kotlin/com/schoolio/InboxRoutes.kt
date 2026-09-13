@@ -10,12 +10,25 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+
+// Every "what day/time is this" computation across the app - calendar event
+// display, calendar all-day-event date anchoring (CalendarClient.kt), the
+// email-fallback date-grouping heading, and "is this past due" - uses this
+// single zone rather than a mix of UTC and local, so a date never disagrees
+// with itself between sections (e.g. a 9pm Eastern event landing under the
+// wrong day's heading because it was formatted in UTC, where it's already
+// past midnight). Hardcoded rather than configurable - this is a two-person
+// household app for one specific household, not a multi-timezone product;
+// ZoneId (not a fixed ZoneOffset) so DST transitions (EST/EDT) are handled
+// automatically instead of drifting an hour off twice a year.
+val HOUSEHOLD_ZONE: ZoneId = ZoneId.of("America/New_York")
 
 // How long to wait after a Gmail pull before running Gemini over whatever's
 // PENDING - long enough that a settings save (which redirects straight back
@@ -40,6 +53,15 @@ const val DEFAULT_INBOX_PULL_DEBOUNCE_MS = 2_000L
 // handful of IMAP connections per hour per user rather than one every few
 // seconds if the tab's left open.
 const val DEFAULT_INBOX_RESYNC_COOLDOWN_MS = 60_000L
+
+// How far into the future a calendar pull looks - the inverse of
+// ScanSettings.lookbackWeeks for email (see CalendarClient.kt's doc comment
+// on why a bounded lookahead, not an open-ended "since", is what calendar
+// needs). Hardcoded rather than a settings-form field for now - one fixed
+// value is enough until there's a reason to make it configurable.
+const val CALENDAR_LOOKAHEAD_DAYS = 7L
+
+private val logger = LoggerFactory.getLogger("InboxRoutes")
 
 // Wire shapes for GET /inbox/status - a plain mapOf(...) mixing Strings/Ints/
 // nested lists is a Map<String, Any>, which kotlinx.serialization can't
@@ -85,10 +107,27 @@ data class InboxStatusResponse(
 // scheduleSync) and the page just shows a "checking for new mail" indicator
 // (see inbox.ftl/app.js) until it's done. schoolSenders/lookbackWeeks live in
 // Firestore (SettingsRepository), edited via the form on this page.
+// scheduleSync also pulls Calendar (if configured - see calendarClient's
+// nullability below) in the same background job: unlike email, a calendar
+// event needs no Gemini step (it already has a title/date), so
+// pullAndStoreCalendarEvents turns each one directly into an ActionItem -
+// see that function's own doc comment for the lookahead window and why no
+// watermark is needed here the way there is for email.
 fun Route.inboxRoutes(
     userStore: UserRepository,
     gmailClient: GmailClient,
     geminiClient: GeminiClient,
+    // Null means Calendar access isn't configured on this deployment at all
+    // (no CALENDAR_SERVICE_ACCOUNT_KEY set - see Application.kt) - unlike
+    // Gmail, there's no per-user "connect" step to gate on anymore (see
+    // CalendarClient.kt's doc comment on the service-account pivot), so the
+    // only question is whether the feature is set up at the deployment level.
+    calendarClient: CalendarClient?,
+    // Shown on the settings page so a signed-in user knows which address to
+    // share their calendar with (see settings.ftl) - null alongside
+    // calendarClient above when the deployment has no service account
+    // configured.
+    calendarServiceAccountEmail: String?,
     settingsStore: SettingsRepository,
     messageStore: MessageRepository,
     actionItemStore: ActionItemRepository,
@@ -152,16 +191,34 @@ fun Route.inboxRoutes(
             } catch (e: Exception) {
                 // Best-effort - a transient IMAP failure shouldn't leave this
                 // user stuck "syncing" forever (see isSyncing above); the
-                // next eligible GET /inbox just retries. Never surfaced to
-                // the user today - no manual retry/error banner for a failed
-                // pull yet, same "not built here yet" gap as message
-                // processing's own FAILED state predates a manual retry.
-            } finally {
-                lastSyncedAt[userId] = Instant.now()
+                // next eligible GET /inbox just retries. Still logged (not
+                // just swallowed) so a real failure isn't invisible. No
+                // manual retry/error banner for a failed pull yet, same "not
+                // built here yet" gap as message processing's own FAILED
+                // state predates a manual retry.
+                logger.warn("Gmail pull failed for user {}", userId, e)
             }
-            // Runs whether the pull above succeeded or not, so a message left
-            // PENDING by an earlier successful pull still gets processed even
-            // if this particular pull attempt failed.
+            // Calendar is a separate try/catch from Gmail's above, not one
+            // shared block - the two pulls are independent (a calendar
+            // failure shouldn't skip Gmail or vice versa), and a calendar
+            // failure is routinely *expected* until a household member does
+            // the one-time "share your calendar with the service account"
+            // step (see CalendarClient.kt), unlike a Gmail failure - so it
+            // logs at a lower level rather than warn.
+            if (calendarClient != null) {
+                try {
+                    pullAndStoreCalendarEvents(email, calendarClient, actionItemStore)
+                } catch (e: Exception) {
+                    logger.debug("Calendar pull failed for user {} (probably not shared with the service account yet)", userId, e)
+                }
+            }
+            lastSyncedAt[userId] = Instant.now()
+            // Runs whether the pull(s) above succeeded or not, so a message
+            // left PENDING by an earlier successful pull still gets
+            // processed even if this particular pull attempt failed. Purely
+            // an email-side concern - calendar events need no Gemini step
+            // (see pullAndStoreCalendarEvents' doc comment), so this doesn't
+            // wait on or otherwise involve the calendar pull.
             scheduleProcessing()
         }
     }
@@ -188,7 +245,7 @@ fun Route.inboxRoutes(
         val messagesById = messages.associateBy { it.id }
         val allActionItems = actionItemStore.getAll()
         val actionItemsByMessage = allActionItems.groupBy { it.sourceMessageId }
-        val today = LocalDate.now(ZoneOffset.UTC).toString()
+        val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
         val (pastActionItems, upcomingActionItems) = allActionItems
             .filterNot { it.dismissed }
             .partition { it.isPastDue(today) }
@@ -275,6 +332,7 @@ fun Route.inboxRoutes(
                     "sendersText" to settings.schoolSenders.joinToString(", "),
                     "lookbackWeeks" to settings.lookbackWeeks,
                     "hasAppPassword" to (user?.gmailAppPassword != null),
+                    "calendarServiceAccountEmail" to calendarServiceAccountEmail,
                     "activeNav" to "settings"
                 ) + call.currentUserModel()
             )
@@ -377,6 +435,47 @@ private suspend fun pullAndStoreNewMessages(
     }
 }
 
+// Fixed [now, now + CALENDAR_LOOKAHEAD_DAYS] window, recomputed fresh on
+// every call - no watermark the way pullAndStoreNewMessages has one. A
+// watermark exists for email to keep an otherwise-unboundedly-large search
+// narrow (see that function's doc comment); the calendar window is already
+// small and doesn't grow, so there's no accumulating history to avoid
+// re-scanning. Dedup instead comes from ActionItemRepository.storeIfAbsent,
+// keyed on the calendar event's own uid, same "safe to re-fetch, no-ops on
+// what's already stored" shape as MessageRepository.storeIfAbsent. No Gemini
+// step for these - a calendar event already carries a title/date natively,
+// unlike an EmailMessage's free-text body that needs the LLM to find one.
+// (Not yet handled: an already-stored event whose time/title changes on the
+// calendar after this first pulled it - storeIfAbsent only guards against
+// duplicate inserts, not updates - see context.md's reconciliation note.)
+private suspend fun pullAndStoreCalendarEvents(
+    email: String,
+    calendarClient: CalendarClient,
+    actionItemStore: ActionItemRepository
+) {
+    val now = Instant.now()
+    val until = now.plus(Duration.ofDays(CALENDAR_LOOKAHEAD_DAYS))
+    val events = calendarClient.fetchEvents(email, now, until)
+    for (event in events) {
+        actionItemStore.storeIfAbsent(
+            ActionItem(
+                id = "calendar-${event.uid}",
+                sourceCalendarEventId = event.uid,
+                title = event.summary,
+                description = event.description ?: "",
+                // An all-day event (e.g. "No School - Teacher PD Day") gets
+                // no time component - CalendarEvent.allDay comes straight
+                // from Google Calendar API's own date-vs-dateTime
+                // distinction (see CalendarClient.kt), not fabricated here.
+                date = if (event.allDay) allDayDateFormatter.format(event.start) else timedEventDateFormatter.format(event.start)
+            )
+        )
+    }
+}
+
+private val timedEventDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm").withZone(HOUSEHOLD_ZONE)
+private val allDayDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(HOUSEHOLD_ZONE)
+
 private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
 
 // ActionItem.date is already YYYY-MM-DD (optionally with a 'T'HH:MM suffix -
@@ -392,7 +491,7 @@ private fun ActionItem.dateKeyAndTime(message: EmailMessage?): Pair<String, Stri
     if (raw != null && raw.length >= 10) {
         return raw.take(10) to raw.drop(10).removePrefix("T").ifEmpty { null }
     }
-    val fallbackKey = message?.receivedAt?.atZone(ZoneOffset.UTC)?.toLocalDate()?.toString() ?: "unknown-date"
+    val fallbackKey = message?.receivedAt?.atZone(HOUSEHOLD_ZONE)?.toLocalDate()?.toString() ?: "unknown-date"
     return fallbackKey to null
 }
 
@@ -423,7 +522,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
-        val message = messagesById[item.sourceMessageId]
+        val message = item.sourceMessageId?.let { messagesById[it] }
         val (dateKey, time) = item.dateKeyAndTime(message)
         Dated(dateKey, time, item, message)
     }
@@ -455,7 +554,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
 // closest to becoming worth dismissing sit at the top.
 private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> =
     actionItems.sortedByDescending { it.date }.map { item ->
-        val message = messagesById[item.sourceMessageId]
+        val message = item.sourceMessageId?.let { messagesById[it] }
         mapOf(
             "id" to item.id,
             "title" to item.title,

@@ -186,8 +186,112 @@ doesn't have an equivalent need here yet; see `foodie`'s CLAUDE.md
 "Service worker caching (PWA)" section for that pattern if offline inbox
 viewing ever becomes a goal.
 
+## Calendar pull (decided, live)
+
+Pulls from Google Calendar as a second input source alongside Gmail. Access
+is via **a single shared Google Cloud service account**, not per-user OAuth
+or an app password — see "Calendar auth: CalDAV + app password doesn't
+work, service account instead" below for why the first two approaches tried
+here didn't pan out.
+
+`CalendarClient.kt` (`GoogleCalendarApiClient`) mints/refreshes an access
+token from a `GoogleCredentials` already scoped to
+`https://www.googleapis.com/auth/calendar.readonly` (via
+`google-auth-library-oauth2-http`, already resolved transitively through
+`google-cloud-firestore` at 1.33.1 — declared explicitly in
+`build.gradle.kts` since our own code imports it directly) and calls the
+real Calendar API v3 (`GET /calendars/{calendarId}/events`) as plain JSON
+over the existing Ktor `HttpClient` — no per-third-party-API SDK, same
+convention as `GeminiClient`/`GmailClient`. `calendarId` is a user's own
+email (their primary calendar's id). Handles Google's actual
+`EventDateTime` shape: a timed event's `dateTime` is RFC3339 *with an
+explicit offset* (parsed via `OffsetDateTime`, not `Instant.parse`, which
+only accepts a bare `Z`), an all-day event's `date` is a bare `yyyy-MM-dd`
+with no time at all — `CalendarEvent.allDay` carries that distinction
+through so `pullAndStoreCalendarEvents` doesn't fabricate a fake midnight
+time for something like "No School - Teacher PD Day". `singleEvents=true`
+expands recurring events into individual occurrences within the window
+rather than one record per indefinite series; a `status: "cancelled"`
+occurrence is dropped rather than turned into an `ActionItem` (no
+update/cancel handling yet either way - see the reconciliation entry below).
+
+**No per-user credential to store or connect at all** — `User` has no
+calendar-related field. Each household member does a one-time step entirely
+on Google's side (Calendar → Settings and sharing → share with the service
+account's email, "See all event details") — nothing to submit in the app.
+`/inbox/settings` just displays the service account's email
+(`calendarServiceAccountEmail`, read from the loaded key's `client_email`)
+so a user knows what to share with. One service account can read *both*
+household members' calendars, since each just grants it access to their own
+- no domain/Workspace requirement, ordinary personal-calendar sharing.
+
+**Wired into `InboxRoutes.kt`'s existing background-pull infra**
+(`scheduleSync`) rather than a separate pipeline, in its own try/catch
+alongside (not merged into) the Gmail pull's — the two are independent
+(one failing shouldn't skip the other), and a calendar failure is routinely
+*expected* until the sharing step above is done, unlike a Gmail failure, so
+it logs at `debug` rather than `warn`. A calendar event carries structured
+fields (title, start/end) natively, so it **skips Gemini extraction**
+entirely (unlike an `EmailMessage`, which needs the LLM step to find a
+date/title in free text) and turns directly into an `ActionItem` via
+`ActionItem.sourceCalendarEventId` — a calendar-derived item has
+`sourceMessageId = null` (that field is nullable now), and inbox.ftl shows
+"From your calendar" instead of the usual `From "<subject>"` line when
+there's no source message. Calendar access is additive, unlike Gmail's hard
+gate on `GET /inbox`: `calendarClient` is nullable (null when
+`CALENDAR_SERVICE_ACCOUNT_KEY` isn't set on a given deployment at all), and
+even when configured, a not-yet-shared calendar just means that one user's
+pull fails quietly - the page loads fine either way.
+
+**Lookahead, not lookback**: unlike email (where what matters is catching up
+on the past), what's useful for calendar is what's coming up. Each pull
+fetches `[now, now + CALENDAR_LOOKAHEAD_DAYS]` (currently a hardcoded 7 days,
+no settings-form field yet) — recomputed fresh every sync, not built from a
+per-sender watermark the way email's lookback is. **No watermark for
+calendar, deliberately**: a watermark's job for email is keeping an
+otherwise-unbounded mailbox search narrow across repeated scans; the
+calendar window is already small and doesn't grow, so there's nothing to
+avoid re-scanning. Dedup instead comes from
+`ActionItemRepository.storeIfAbsent` (new method, alongside the existing
+`addAll` the Gemini path still uses), keyed on the calendar event's own
+`uid` — same "safe to re-fetch, no-op on what's already stored" shape as
+`MessageRepository.storeIfAbsent`.
+
+**Known gap, not solved here**: `storeIfAbsent` only guards against
+duplicate *inserts* on a re-pull — it does nothing if an already-stored
+calendar event's time/title/etc. later changes upstream (rescheduled,
+renamed, cancelled). See the reconciliation entry below.
+
+**All display/grouping dates and times are Eastern (`HOUSEHOLD_ZONE` =
+`America/New_York`, `InboxRoutes.kt`), not UTC** — a `ZoneId`, not a fixed
+offset, so DST (EST/EDT) is handled automatically. Applies consistently
+everywhere a "what day/time is this" decision gets made: a calendar event's
+displayed time, an all-day event's date anchor (`CalendarClient.kt`'s
+`EventDateTime.toInstant` — has to anchor at midnight in this *same* zone,
+not UTC, or the round-trip through `InboxRoutes.kt`'s formatter would shift
+the date by a day), the email-fallback date-grouping heading, and "is this
+past due" (`today`). Deliberately not configurable — this is a two-person
+household app for one specific household, not a multi-timezone product.
+
 ## Not yet decided / open questions
 
+- **Cross-source reconciliation (update vs. duplicate)**: realized this is
+  one general problem wearing three costumes, not three separate features:
+  (1) two emails describing the same event should update one action item,
+  not create two — already broken today, `ActionItemStore.addAll` always
+  inserts with a fresh random id, no matching against existing items at
+  all; (2) a calendar event that's edited after being pulled (rescheduled,
+  renamed, cancelled) won't be reflected — `storeIfAbsent`'s id-based dedup
+  only stops duplicate inserts, not updates; (3) an email and a calendar
+  event describing the same real-world thing should be one entry, not two
+  (the original ask that surfaced this). All three need the same
+  underlying capability: given a new extracted/fetched record, decide
+  whether it matches something already stored and update-in-place instead
+  of inserting. The hard part is the matching itself — email/calendar don't
+  share stable ids the way re-pulling the same message does, so it likely
+  needs fuzzy matching (date + title/description overlap), maybe via
+  Gemini's judgment rather than string equality. Explicitly parked as one
+  shared design task, not to be solved piecemeal per source-pair.
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
@@ -350,7 +454,11 @@ issuing one IMAP search covering every sender in that single window.
   not these env vars), `GEMINI_API_KEY` (required for `RestGeminiClient` to
   authenticate against `generativelanguage.googleapis.com`), `GEMINI_MODEL`
   (defaults to `gemini-3.6-flash` — verify against `foodie`'s current model
-  first, see CLAUDE.md's Gemini gotchas).
+  first, see CLAUDE.md's Gemini gotchas), `CALENDAR_SERVICE_ACCOUNT_KEY`
+  (the full downloaded service-account JSON key content, not a file path —
+  see "Calendar pull" above; absent entirely means Calendar access is off
+  for that deployment, `calendarClient`/`calendarServiceAccountEmail` both
+  come out `null`, no crash).
 - **Firestore database**: created and confirmed working — real sign-in on
   the deployed Cloud Run service has round-tripped through
   `FirestoreUserStore` successfully. Database id/region weren't

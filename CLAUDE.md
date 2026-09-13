@@ -176,6 +176,42 @@ hit the same way.
   quirk `foodie`'s `RecipeParser.kt` works around. `RestGeminiClient.extract`
   strips it (`stripJsonFence`) before decoding; don't remove that without
   re-verifying against a live response first.
+- **Google's CalDAV endpoint (`apidata.googleusercontent.com/caldav/v2`)
+  rejects Basic Auth/app passwords outright (401), unlike IMAP.** The first
+  attempt at Calendar access assumed the same app-password mechanism that
+  works for Gmail IMAP would also work for CalDAV (they're both "legacy
+  protocol access" per Google's own framing) - that assumption was wrong,
+  verified against a live account with a flat, content-free `401
+  Unauthorized`/`<D:error/>` response, not a bug in the request-building.
+  Confirmed real only because `CalDavCalendarClient.fetchEvents` originally
+  didn't check the response status at all - a non-2xx response still has a
+  body, and the VEVENT parser just found no `<calendar-data>` in it and
+  silently returned an empty list, indistinguishable from "no upcoming
+  events." **If a future third-party integration silently returns nothing
+  useful, check the response status before assuming the data itself is
+  just empty** - this bit calendar hard enough that it's worth checking
+  early rather than last. Calendar access now goes through a shared Google
+  Cloud service account instead (`GoogleCalendarApiClient`, real Calendar
+  API v3 - see `context.md`'s Calendar pull section) - service-account
+  credentials aren't subject to the same Basic-Auth restriction, and also
+  sidestep the OAuth-consent-screen "sensitive scope" verification
+  questions entirely, since that machinery is about consumer "Sign in with
+  Google" flows, not machine identities.
+- **A calendar event's `description` can carry an entire email
+  confidentiality disclaimer, not just the actual event content.** Hit for
+  real on a live account the day Calendar pull went live: a school district
+  creates its calendar invites by forwarding/pasting an email, and that
+  email's org-wide bilingual (English/French) legal footer came along with
+  it into the Calendar API's `description` field - genuinely ugly rendered
+  straight into `/inbox`'s action-item list. `CalendarEvent.description` is
+  cleaned at the source (`GoogleCalendarApiClient`'s
+  `stripDisclaimerFooter`, matched against a couple of known marker
+  phrases, e.g. "this e-mail message" / "le présent message électronique")
+  before it ever reaches `ActionItem` - if a different district's
+  disclaimer wording shows up ugly again, add its marker phrase there
+  rather than solving this generically (there's no HTML/boilerplate parser
+  here, same "hand-rolled just far enough" call as GmailClient's own crude
+  HTML-tag-strip fallback).
 - **`sw.js`'s `CACHE_NAME` must be bumped whenever any file in its
   `STATIC_ASSETS` list changes** (`css/base.css`, `app.js`, `manifest.json`,
   `logo.svg`) — same requirement as `foodie`'s service worker, for the same

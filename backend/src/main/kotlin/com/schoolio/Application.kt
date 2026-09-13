@@ -1,5 +1,6 @@
 package com.schoolio
 
+import com.google.auth.oauth2.ServiceAccountCredentials
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.FirestoreOptions
 import io.ktor.client.*
@@ -73,6 +74,29 @@ private val geminiHttpClient: HttpClient by lazy {
 // for the rest, and IO-bound work doesn't tie up a request-handling thread.
 private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+// Separate from oauthHttpClient/geminiHttpClient - Calendar API v3 calls are
+// fast/low-volume like the OAuth calls (unlike Gemini's geminiHttpClient), so
+// CIO's default timeout is fine, and there's no need for
+// oauthHttpClient's ContentNegotiation plugin (GoogleCalendarApiClient
+// decodes its own JSON response body directly).
+private val calendarHttpClient: HttpClient by lazy { HttpClient(CIO) }
+
+// The service account backing GoogleCalendarApiClient (see CalendarClient.kt's
+// doc comment on why Calendar access is a shared service-account credential,
+// not per-user OAuth or an app password) - CALENDAR_SERVICE_ACCOUNT_KEY holds
+// the full downloaded JSON key content directly as an env var (same "secret
+// as a plain env var" pattern as GEMINI_API_KEY, not a mounted file), so it's
+// absent entirely on a deployment that hasn't set it up yet - unset locally
+// is fine, it just means no calendar pull happens (see calendarClient below).
+// Captured once as ServiceAccountCredentials (not yet scoped) so both the
+// scoped credentials below and the display-only email on the settings page
+// can be read from the same loaded key without parsing it twice.
+private val calendarServiceAccount: ServiceAccountCredentials? by lazy {
+    System.getenv("CALENDAR_SERVICE_ACCOUNT_KEY")?.let {
+        ServiceAccountCredentials.fromStream(it.byteInputStream())
+    }
+}
+
 fun Application.module(
     // Falls back to a hardcoded insecure dev value if unset, same pattern as
     // sessionSecret below - fine locally, but must be set on Cloud Run or
@@ -86,6 +110,12 @@ fun Application.module(
     ),
     gmailClient: GmailClient = ImapGmailClient(),
     geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
+    // Null (calendar pull skipped entirely - see scheduleSync in
+    // InboxRoutes.kt) when CALENDAR_SERVICE_ACCOUNT_KEY isn't set.
+    calendarClient: CalendarClient? = calendarServiceAccount?.let {
+        GoogleCalendarApiClient(calendarHttpClient, it.createScoped(listOf("https://www.googleapis.com/auth/calendar.readonly")))
+    },
+    calendarServiceAccountEmail: String? = calendarServiceAccount?.clientEmail,
     oauthClient: HttpClient = oauthHttpClient,
     oauthRedirectBaseUrl: String = System.getenv("OAUTH_REDIRECT_BASE_URL") ?: "http://localhost:8080",
     sessionSecret: String = System.getenv("SESSION_SECRET") ?: "dev-insecure-session-secret",
@@ -152,7 +182,7 @@ fun Application.module(
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
             inboxRoutes(
-                userStore, gmailClient, geminiClient, settingsStore,
+                userStore, gmailClient, geminiClient, calendarClient, calendarServiceAccountEmail, settingsStore,
                 messageStore, actionItemStore, scanStateStore,
                 backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs
             )

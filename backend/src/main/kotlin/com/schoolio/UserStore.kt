@@ -30,6 +30,13 @@ data class User(
     // decrypts it back out, so nothing above the persistence layer needs to
     // know encryption is happening at all.
     val gmailAppPassword: String? = null,
+    // No calendarAppPassword field (there was one, briefly) - Calendar access
+    // now goes through a single shared service account (GoogleCalendarApiClient,
+    // see CalendarClient.kt) rather than a per-user credential at all. Google's
+    // CalDAV endpoint turned out to reject Basic Auth/app passwords outright
+    // (401, verified against a live account) - unlike IMAP, that protocol
+    // doesn't accept them - so there was never a working per-user credential
+    // to store here. See context.md's Calendar pull section for the full story.
     val createdAt: Instant? = null
 )
 

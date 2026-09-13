@@ -31,6 +31,20 @@
         </section>
 
         <section class="settings-section">
+            <h2>Calendar connection</h2>
+            <#if calendarServiceAccountEmail?has_content>
+                <p>Share your Google Calendar with
+                    <strong>${calendarServiceAccountEmail}</strong>
+                    (Calendar &rarr; Settings and sharing &rarr; Share with specific people &rarr; add that address with
+                    "See all event details") to see your upcoming events here - no password to enter, and nothing to
+                    submit on this page. It can take a few minutes after sharing before events show up on
+                    <a href="/inbox">the inbox</a>.</p>
+            <#else>
+                <p>Calendar access isn't configured on this deployment yet.</p>
+            </#if>
+        </section>
+
+        <section class="settings-section">
             <h2>School senders</h2>
             <form method="post" action="/inbox/settings" class="settings-form">
                 <label>

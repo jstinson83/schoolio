@@ -69,6 +69,27 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
     }
 }
 
+class FakeCalendarClient(private val events: List<CalendarEvent> = emptyList()) : CalendarClient {
+    var lastCalendarIdUsed: String? = null
+        private set
+    var lastFromUsed: Instant? = null
+        private set
+    var lastUntilUsed: Instant? = null
+        private set
+    // Same "prove a second real pull actually happened" purpose as
+    // FakeGmailClient.searchCallCount above.
+    var fetchCallCount = 0
+        private set
+
+    override suspend fun fetchEvents(calendarId: String, from: Instant, until: Instant): List<CalendarEvent> {
+        lastCalendarIdUsed = calendarId
+        lastFromUsed = from
+        lastUntilUsed = until
+        fetchCallCount++
+        return events
+    }
+}
+
 class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SENDER), 4)) : SettingsRepository {
     var current: ScanSettings = initial
         private set
@@ -119,6 +140,10 @@ class FakeActionItemRepository : ActionItemRepository {
 
     override suspend fun addAll(items: List<ActionItem>) {
         this.items.addAll(items)
+    }
+
+    override suspend fun storeIfAbsent(item: ActionItem) {
+        if (items.none { it.id == item.id }) items.add(item)
     }
 
     override suspend fun dismiss(id: String) {
@@ -245,6 +270,13 @@ fun ApplicationTestBuilder.testModule(
     userStore: UserRepository = FakeUserRepository(),
     gmailClient: GmailClient = FakeGmailClient(),
     geminiClient: GeminiClient = FakeGeminiClient(),
+    // Nullable like the real module()'s default - null means Calendar isn't
+    // configured on this deployment (see InboxRoutes.kt's scheduleSync).
+    // Non-null by default here so most tests exercise the calendar pull path
+    // too (with zero events, a no-op); pass null explicitly to test the
+    // "not configured at all" case.
+    calendarClient: CalendarClient? = FakeCalendarClient(),
+    calendarServiceAccountEmail: String? = "schoolio-calendar@test-project.iam.gserviceaccount.com",
     oauthClient: HttpClient = fakeGoogleOAuthClient(),
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
@@ -273,6 +305,8 @@ fun ApplicationTestBuilder.testModule(
             userStore = userStore,
             gmailClient = gmailClient,
             geminiClient = geminiClient,
+            calendarClient = calendarClient,
+            calendarServiceAccountEmail = calendarServiceAccountEmail,
             oauthClient = oauthClient,
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
