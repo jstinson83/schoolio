@@ -21,36 +21,43 @@ interface CalendarClient {
     // email/appPassword are per-user (User.email/User.calendarAppPassword,
     // see UserStore.kt's doc comment on why it's a separate field from
     // gmailAppPassword) - same "caller supplies credentials, this interface
-    // doesn't touch UserRepository" split as GmailClient.
-    suspend fun fetchEvents(email: String, appPassword: String, since: Instant): List<CalendarEvent>
+    // doesn't touch UserRepository" split as GmailClient. [from, until] is a
+    // bounded window, not an open-ended "since" the way GmailClient's lookback
+    // is - unlike email (where what matters is catching up on everything back
+    // to some point), what's useful here is what's coming up, and an unbounded
+    // upper bound risks the server trying to return recurring-event instances
+    // indefinitely. The caller (InboxRoutes.kt) currently always passes
+    // [now, now + lookahead], recomputed fresh on every pull - see its own
+    // doc comment on why no watermark is needed here the way there is for
+    // email.
+    suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent>
 }
 
-// STUB - not wired into InboxRoutes.kt's pull pipeline yet (see
-// User.calendarAppPassword's doc comment). The CalDAV request shape below
-// (REPORT/calendar-query, Basic Auth with a Google app password, same
-// app-password mechanism IMAP already uses - see context.md's Gmail
-// integration notes for why that sidesteps OAuth entirely) is real, but the
-// multistatus/iCalendar response parsing has only been checked against the
-// fabricated response in CalDavCalendarClientTest, not a live Google
-// account. Known gaps, same "documented, not silently wrong" spirit as this
-// codebase's other known-incomplete corners (see CLAUDE.md): recurring
-// events (RRULE) aren't expanded into individual occurrences, all-day events
-// (DTSTART;VALUE=DATE:yyyyMMdd, no time component) aren't parsed, and a
-// TZID-qualified local DTSTART/DTEND (rather than a bare UTC ...Z timestamp)
-// isn't parsed either - all three should be verified against a real response
-// before this is trusted for anything beyond the plain-UTC-timed-event case.
+// The CalDAV request shape below (REPORT/calendar-query, Basic Auth with a
+// Google app password, same app-password mechanism IMAP already uses - see
+// context.md's Gmail integration notes for why that sidesteps OAuth
+// entirely) is real, but the multistatus/iCalendar response parsing has only
+// been checked against the fabricated response in CalDavCalendarClientTest,
+// not a live Google account. Known gaps, same "documented, not silently
+// wrong" spirit as this codebase's other known-incomplete corners (see
+// CLAUDE.md): recurring events (RRULE) aren't expanded into individual
+// occurrences, all-day events (DTSTART;VALUE=DATE:yyyyMMdd, no time
+// component) aren't parsed, and a TZID-qualified local DTSTART/DTEND (rather
+// than a bare UTC ...Z timestamp) isn't parsed either - all three should be
+// verified against a real response before this is trusted for anything
+// beyond the plain-UTC-timed-event case.
 class CalDavCalendarClient(
     private val httpClient: HttpClient,
     private val baseUrl: String = "https://apidata.googleusercontent.com/caldav/v2"
 ) : CalendarClient {
-    override suspend fun fetchEvents(email: String, appPassword: String, since: Instant): List<CalendarEvent> =
+    override suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent> =
         withContext(Dispatchers.IO) {
             val response = httpClient.request("$baseUrl/$email/events") {
                 method = HttpMethod("REPORT")
                 header(HttpHeaders.Authorization, basicAuthHeader(email, appPassword))
                 header("Depth", "1")
                 contentType(ContentType.Application.Xml)
-                setBody(calendarQueryBody(since))
+                setBody(calendarQueryBody(from, until))
             }
             parseEvents(response.bodyAsText())
         }
@@ -58,11 +65,12 @@ class CalDavCalendarClient(
     private fun basicAuthHeader(email: String, appPassword: String): String =
         "Basic " + Base64.getEncoder().encodeToString("$email:$appPassword".toByteArray(Charsets.UTF_8))
 
-    // RFC 4791 calendar-query REPORT, filtered to VEVENTs starting at/after
-    // [since] - server-side filtering, same "never pull everything and filter
-    // locally" principle GmailClient's IMAP SEARCH already follows.
-    private fun calendarQueryBody(since: Instant): String {
-        val start = icsUtcFormatter.format(since)
+    // RFC 4791 calendar-query REPORT, filtered to VEVENTs in [from, until] -
+    // server-side filtering, same "never pull everything and filter locally"
+    // principle GmailClient's IMAP SEARCH already follows.
+    private fun calendarQueryBody(from: Instant, until: Instant): String {
+        val start = icsUtcFormatter.format(from)
+        val end = icsUtcFormatter.format(until)
         return """
             <?xml version="1.0" encoding="utf-8" ?>
             <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -72,7 +80,7 @@ class CalDavCalendarClient(
               <C:filter>
                 <C:comp-filter name="VCALENDAR">
                   <C:comp-filter name="VEVENT">
-                    <C:time-range start="$start"/>
+                    <C:time-range start="$start" end="$end"/>
                   </C:comp-filter>
                 </C:comp-filter>
               </C:filter>

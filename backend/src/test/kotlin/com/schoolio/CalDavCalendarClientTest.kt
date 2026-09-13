@@ -12,8 +12,9 @@ import kotlin.test.*
 
 // Exercises CalDavCalendarClient's real request/response handling against a
 // MockEngine standing in for Google's CalDAV endpoint - same "test the real
-// HTTP client separately from any route" split as GeminiClientTest (nothing
-// in InboxRoutes.kt calls this yet - see CalendarClient.kt's doc comment).
+// HTTP client separately from the route that calls it" split as
+// GeminiClientTest vs InboxTest (which only ever goes through
+// FakeCalendarClient).
 class CalDavCalendarClientTest {
     private fun mockClient(handler: MockRequestHandler): HttpClient =
         HttpClient(MockEngine) { engine { addHandler(handler) } }
@@ -61,7 +62,7 @@ class CalDavCalendarClientTest {
         }
 
         CalDavCalendarClient(httpClient, baseUrl = "https://caldav.example/v2")
-            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"))
+            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-08T00:00:00Z"))
 
         assertEquals(HttpMethod("REPORT"), sawMethod)
         assertEquals("https://caldav.example/v2/test@example.com/events", sawUrl)
@@ -69,7 +70,7 @@ class CalDavCalendarClientTest {
             "Basic " + Base64.getEncoder().encodeToString("test@example.com:fake-app-password".toByteArray()),
             sawAuth
         )
-        assertTrue(sawBody?.contains("time-range start=\"20260901T000000Z\"") == true)
+        assertTrue(sawBody?.contains("time-range start=\"20260901T000000Z\" end=\"20260908T000000Z\"") == true)
     }
 
     @Test
@@ -77,7 +78,7 @@ class CalDavCalendarClientTest {
         val httpClient = mockClient { respond(multistatusResponse, HttpStatusCode.MultiStatus) }
 
         val events = CalDavCalendarClient(httpClient)
-            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"))
+            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-08T00:00:00Z"))
 
         assertEquals(1, events.size)
         val event = events.single()
@@ -98,7 +99,7 @@ class CalDavCalendarClientTest {
         }
 
         val events = CalDavCalendarClient(httpClient)
-            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"))
+            .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-08T00:00:00Z"))
 
         assertEquals(emptyList(), events)
     }
