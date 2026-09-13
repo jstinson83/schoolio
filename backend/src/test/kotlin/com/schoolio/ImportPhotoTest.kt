@@ -5,11 +5,20 @@ import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import kotlin.test.*
 
 // The photo-import feature doesn't need Gmail connected at all (unlike most
 // of InboxTest) - it's reachable by any signed-in user, so these tests use
 // plain signInFakeUser() rather than signInFakeUserWithGmailConnected.
+//
+// The page itself (GET /inbox/import-photo) is a single-page FAB flow now -
+// a photo goes to POST /inbox/import-photo/extract via fetch() and its JSON
+// response is what app.js appends into the on-page review list, so these
+// tests exercise that JSON endpoint directly rather than a server-rendered
+// review page (see InboxRoutes.kt's doc comment on that route for why it's
+// JSON, not HTML).
 class ImportPhotoTest {
     private fun fakePhotoFormData(fileName: String = "calendar.jpg", contentType: String = "image/jpeg", bytes: ByteArray = byteArrayOf(1, 2, 3, 4)) =
         formData {
@@ -20,7 +29,7 @@ class ImportPhotoTest {
         }
 
     @Test
-    fun testUploadFormIsReachableForAnySignedInUserWithoutGmailConnected() = testApplication {
+    fun testUploadPageIsReachableForAnySignedInUserWithoutGmailConnected() = testApplication {
         testModule()
         val client = signInFakeUser()
 
@@ -30,7 +39,7 @@ class ImportPhotoTest {
     }
 
     @Test
-    fun testUploadingAPhotoShowsExtractedEventsOnAReviewPageWithoutPersistingThemYet() = testApplication {
+    fun testExtractingAPhotoReturnsEventsAsJsonWithoutPersistingThemYet() = testApplication {
         val geminiClient = FakeGeminiClient(
             photoEvents = listOf(
                 ExtractedCalendarEvent(title = "Picture day", date = "2026-09-25"),
@@ -41,13 +50,17 @@ class ImportPhotoTest {
         testModule(geminiClient = geminiClient, actionItemStore = actionItemStore)
         val client = signInFakeUser()
 
-        val response = client.submitFormWithBinaryData("/inbox/import-photo", fakePhotoFormData())
-        val body = response.bodyAsText()
-
+        val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", fakePhotoFormData())
         assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(body.contains("Picture day"))
-        assertTrue(body.contains("Early dismissal"))
-        assertTrue(body.contains("1pm release"))
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+
+        assertNull(body.error)
+        assertEquals(2, body.events.size)
+        assertEquals("Picture day", body.events[0].title)
+        assertEquals("2026-09-25", body.events[0].date)
+        assertEquals("Early dismissal", body.events[1].title)
+        assertEquals("13:00", body.events[1].time)
+        assertEquals("1pm release", body.events[1].description)
         assertEquals(4, geminiClient.lastImageBytesSize)
         assertEquals("image/jpeg", geminiClient.lastImageMimeType)
         // Nothing should be created until the review step is confirmed.
@@ -55,18 +68,20 @@ class ImportPhotoTest {
     }
 
     @Test
-    fun testNoFileSelectedShowsAnErrorInsteadOfCallingGemini() = testApplication {
+    fun testNoFileSelectedReturnsAnErrorInsteadOfCallingGemini() = testApplication {
         val geminiClient = FakeGeminiClient()
         testModule(geminiClient = geminiClient)
         val client = signInFakeUser()
 
-        val response = client.submitFormWithBinaryData("/inbox/import-photo", emptyList())
-        assertTrue(response.bodyAsText().contains("Choose a photo to upload"))
+        val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", emptyList())
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertEquals("Choose a photo to upload.", body.error)
+        assertTrue(body.events.isEmpty())
         assertNull(geminiClient.lastImageBytesSize)
     }
 
     @Test
-    fun testExtractionFailureShowsAFriendlyErrorInsteadOfCrashing() = testApplication {
+    fun testExtractionFailureReturnsAFriendlyErrorInsteadOfCrashing() = testApplication {
         val geminiClient = object : GeminiClient {
             override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction =
                 error("not used")
@@ -77,21 +92,21 @@ class ImportPhotoTest {
         testModule(geminiClient = geminiClient)
         val client = signInFakeUser()
 
-        val response = client.submitFormWithBinaryData("/inbox/import-photo", fakePhotoFormData())
+        val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", fakePhotoFormData())
         assertEquals(HttpStatusCode.OK, response.status)
-        // Not "Couldn't ..." verbatim - FreeMarker's autoescaping (HTMLOutputFormat)
-        // turns the apostrophe into an HTML entity in the rendered page.
-        assertTrue(response.bodyAsText().contains("try a clearer picture"))
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertEquals("Couldn't read that photo - try a clearer picture.", body.error)
     }
 
     @Test
-    fun testNoEventsFoundShowsAnEmptyResultMessage() = testApplication {
+    fun testNoEventsFoundReturnsAnEmptyResultMessage() = testApplication {
         val geminiClient = FakeGeminiClient(photoEvents = emptyList())
         testModule(geminiClient = geminiClient)
         val client = signInFakeUser()
 
-        val response = client.submitFormWithBinaryData("/inbox/import-photo", fakePhotoFormData())
-        assertTrue(response.bodyAsText().contains("No events found in that photo"))
+        val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", fakePhotoFormData())
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertEquals("No events found in that photo.", body.error)
     }
 
     @Test

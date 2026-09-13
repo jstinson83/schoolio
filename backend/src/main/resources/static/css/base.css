@@ -62,6 +62,22 @@ h1, h2, h3 {
     background: #f2f4f8;
 }
 
+.btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    padding: 0.35rem;
+}
+
+.btn-ghost:hover {
+    color: var(--text);
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 /* ---- Nav bar: full-bleed navy bar, content constrained to the page column ---- */
 
 .app-nav {
@@ -588,4 +604,136 @@ h1, h2, h3 {
     display: flex;
     flex-wrap: wrap;
     gap: 1rem;
+}
+
+/* Extra bottom room on the import-photo page specifically (see its own
+   "inbox-photo-import" class on <main>, alongside the shared "inbox" one) -
+   so the fixed FAB (see .fab below) never sits on top of the last event row
+   or the confirm button. Scoped to its own class rather than overriding
+   ".inbox" directly, since inbox.ftl/dismissed.ftl share that class too and
+   have no FAB to leave room for. */
+.inbox-photo-import {
+    padding-bottom: 6rem;
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    text-align: center;
+    padding: 2.5rem 1.5rem;
+    background: var(--card-bg);
+    border: 1px dashed var(--border);
+    border-radius: 0.5rem;
+    color: var(--text-muted);
+}
+
+.empty-state svg {
+    opacity: 0.5;
+}
+
+/* Staging card - shown once a photo has been picked via the FAB, before
+   "Extract events" has been pressed (see app.js's import-photo block). */
+.staging-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 2px 8px rgba(31, 58, 95, 0.06);
+}
+
+.staging-thumb {
+    flex: none;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.3rem;
+    background: var(--page-bg);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
+.staging-info {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.staging-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.staging-status {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.staging-actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+/* Briefly highlights a row just appended by an extract call (see app.js) so
+   it's obvious which events came from the photo that was just added, then
+   fades back to the normal action-item look on its own. */
+@keyframes justAdded {
+    from { background-color: #fdf0d5; border-color: #e8b84b; }
+    to { background-color: var(--card-bg); border-color: var(--border); }
+}
+
+.just-added {
+    animation: justAdded 1.8s ease-out;
+}
+
+.confirm-bar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.9rem 0;
+    margin-top: 0.5rem;
+    background: linear-gradient(to top, var(--page-bg) 65%, transparent);
+}
+
+/* Floating action button - bottom-left, opens the camera/file picker. Fixed
+   to the viewport (not the .inbox content column) so it stays reachable
+   with a thumb regardless of scroll position, same reasoning a native
+   mobile app FAB would use. */
+.fab {
+    position: fixed;
+    left: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 15;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 14px rgba(192, 57, 43, 0.45);
+    cursor: pointer;
+}
+
+.fab:hover {
+    background: var(--accent-dark);
+}
+
+.fab:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
 }

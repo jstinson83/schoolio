@@ -281,31 +281,46 @@ household app for one specific household, not a multi-timezone product.
 
 A third input source alongside email and the Calendar API pull, for events
 that only exist on paper/whiteboard - a physical wall calendar, a printed
-school schedule, a note on a whiteboard. `GET /inbox/import-photo` shows an
-upload form (`accept="image/*" capture="environment"` on the file input, so
-mobile browsers open the camera directly rather than a file picker - "take a
-photo" is the primary use case). `POST /inbox/import-photo` sends the photo
-to Gemini's vision input (`GeminiClient.extractCalendarEventsFromImage`) -
-same `generateContent` REST endpoint as the email extraction path, just with
-an `inlineData` (base64) part alongside the text prompt instead of text
-alone, and its own response schema (`events: [{title, date, time?,
-description?}]`). The prompt anchors year-inference (a whiteboard entry like
-"Tue 9/15" with no year printed anywhere) to `HOUSEHOLD_ZONE`'s current date,
-same zone as every other "what day is it" decision in this app.
+school schedule, a note on a whiteboard. `GET /inbox/import-photo` is a
+single page (not a page-per-photo flow): a camera-icon FAB fixed to the
+bottom-left corner opens the camera/file picker directly (a hidden
+`accept="image/*" capture="environment"` file input - mobile browsers open
+the camera itself rather than a picker, since "take a photo" is the primary
+use case), and every photo's extracted events accumulate into one on-page
+review list, so a multi-month wall calendar can be worked through a photo at
+a time without losing earlier results.
+
+Each photo is sent to `POST /inbox/import-photo/extract` (`app.js`'s
+`fetch()`, not a plain form post - a full-page reload would wipe out
+whatever earlier photos already added to the list) as multipart, which calls
+Gemini's vision input (`GeminiClient.extractCalendarEventsFromImage`) - same
+`generateContent` REST endpoint as the email extraction path, just with an
+`inlineData` (base64) part alongside the text prompt instead of text alone,
+and its own response schema (`events: [{title, date, time?, description?}]`).
+The prompt anchors year-inference (a whiteboard entry like "Tue 9/15" with no
+year printed anywhere) to `HOUSEHOLD_ZONE`'s current date, same zone as every
+other "what day is it" decision in this app. The route returns JSON
+(`PhotoExtractionResponse`), never a rendered page - every "nothing to show"
+case (no file, too-large upload, Gemini failure, a genuine zero-event
+extraction) is just its optional `error` field on an otherwise-200 response,
+not a non-2xx status, so `app.js` doesn't need a separate branch per failure
+mode.
 
 **Resolves the "how much human review" open question, for this one path
 only**: unlike the Calendar API pull (structured fields straight from
 Google's own data, no review needed) or email extraction (already shown
 as-is on `/inbox`), a photo import's OCR/handwriting read is meaningfully
-more error-prone, so extracted events go to a review step
-(`import-photo-review.ftl`) - a checkbox + editable title/date/time/notes
-per row - before anything is persisted. Nothing is written to Firestore
-until `POST /inbox/import-photo/confirm` is submitted; an unchecked or
-emptied-title row is silently dropped rather than treated as an error, since
-narrowing the list down is the point of the step. Confirmed rows become
-plain `ActionItem`s via `addAll` (fresh random ids, same as the email path) -
-a one-off import has no stable id to upsert against the way a recurring
-Calendar pull does.
+more error-prone, so each extraction's events are appended into the page's
+review list - a checkbox + editable title/date/time/notes per row, same
+markup/CSS classes (`photo-review-item` etc.) regardless of which photo a
+row came from - before anything is persisted. Nothing is written to
+Firestore until the page's one `POST /inbox/import-photo/confirm` (a normal
+form submit, covering every row from every photo added this visit) goes
+through; an unchecked or emptied-title row is silently dropped rather than
+treated as an error, since narrowing the list down is the point of the step.
+Confirmed rows become plain `ActionItem`s via `addAll` (fresh random ids,
+same as the email path) - a one-off import has no stable id to upsert
+against the way a recurring Calendar pull does.
 
 `ActionItem.sourcePhotoImport` (boolean) marks these - the third case
 alongside `sourceMessageId`/`sourceCalendarEventId` (now "at most one" set,

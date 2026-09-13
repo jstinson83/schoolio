@@ -20,7 +20,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
-// Hard cap on an uploaded calendar photo (see POST /inbox/import-photo) - a
+// Hard cap on an uploaded calendar photo (see POST /inbox/import-photo/extract) - a
 // generous ceiling for an actual phone-camera photo (a few MB), just there
 // to reject something absurd (a misdirected large file) before it's
 // base64-encoded and sent to Gemini, not a real capacity limit for a
@@ -105,6 +105,23 @@ data class InboxStatusResponse(
     val messages: List<InboxMessageSummary>,
     val failed: List<FailedMessageSummary>
 )
+
+// Wire shape for POST /inbox/import-photo/extract - the single-page photo
+// import flow (import-photo.ftl/app.js) calls this once per photo via fetch()
+// and appends [events] into the on-page review list itself, rather than the
+// server re-rendering a whole page per photo the way a plain form post would
+// (see that route's doc comment for why: multiple photos need to accumulate
+// into one review batch before anything is confirmed). [error] covers every
+// "nothing to show" case - no file chosen, a too-large upload, Gemini
+// throwing, or a real zero-event extraction - as one optional field rather
+// than a non-2xx status, so the client's fetch handling doesn't need a
+// separate branch for each: it always parses the JSON body and only ever
+// checks whether [error] is set.
+@Serializable
+data class ExtractedEventSummary(val title: String, val date: String, val time: String? = null, val description: String? = null)
+
+@Serializable
+data class PhotoExtractionResponse(val events: List<ExtractedEventSummary> = emptyList(), val error: String? = null)
 
 // The app's main flow: pull the last-unseen email from `schoolSenders` only
 // (never the whole inbox - see README's "Sender filtering" scope item),
@@ -330,13 +347,14 @@ fun Route.inboxRoutes(
         call.respondRedirect("/inbox/dismissed")
     }
 
-    // Upload form for the photo-import feature - a photo of a physical/paper
-    // calendar, printed school schedule, or whiteboard, read by Gemini's
-    // vision input (see GeminiClient.kt's extractCalendarEventsFromImage)
-    // instead of the email/Calendar-API pipelines. accept+capture on the
-    // file input (import-photo.ftl) hints mobile browsers to open the camera
-    // directly rather than a file picker, since "take a photo" is the
-    // primary use case, not "upload an existing image."
+    // Single page for the photo-import feature - a camera-icon FAB (bottom
+    // corner, see import-photo.ftl/app.js) opens the camera/file picker
+    // directly, and every photo's extracted events land in one on-page
+    // review list rather than a page-per-photo flow, so taking several
+    // photos of a multi-month calendar builds up one review batch instead
+    // of restarting the page each time. The list starts empty - nothing is
+    // rendered server-side here, it's all built client-side from
+    // POST .../extract's JSON responses.
     get("/inbox/import-photo") {
         call.respond(
             FreeMarkerContent(
@@ -346,17 +364,24 @@ fun Route.inboxRoutes(
         )
     }
 
-    // Runs the photo through Gemini and renders a review step rather than
-    // creating action items directly - unlike the Calendar API pull (which
-    // reads structured fields straight off Google's own data), reading dates
-    // and titles off a photographed calendar is exactly the kind of
-    // error-prone OCR/handwriting read that's worth a household member's
-    // eyes before anything lands on /inbox (see context.md's "How much human
-    // review..." open question - photo import is the one path here that
-    // resolves it in favor of confirm-first). Nothing is persisted by this
-    // route; POST /inbox/import-photo/confirm below is what actually calls
-    // actionItemStore.
-    post("/inbox/import-photo") {
+    // Called via fetch() once per photo (see app.js) rather than a plain
+    // form post, specifically so the page above can append this call's
+    // events onto whatever earlier photos already added instead of a normal
+    // form submission's whole-page reload wiping out that in-progress
+    // review list. Returns JSON, never a rendered page - PhotoExtractionResponse's
+    // doc comment covers why every "nothing to show" case (bad upload,
+    // Gemini failure, zero events) is just an [error] string on an
+    // otherwise-200 response rather than a non-2xx status. Doesn't persist
+    // anything itself - unlike the Calendar API pull (structured fields
+    // straight from Google's own data), reading dates/titles off a
+    // photographed calendar is exactly the kind of error-prone OCR/
+    // handwriting read that's worth a household member's eyes before
+    // anything lands on /inbox (see context.md's "How much human review..."
+    // open question - photo import is the one path here that resolves it in
+    // favor of confirm-first), so POST /inbox/import-photo/confirm below is
+    // still what actually calls actionItemStore, once for every photo's
+    // events at once.
+    post("/inbox/import-photo/extract") {
         var imageBytes: ByteArray? = null
         var mimeType: String? = null
         call.receiveMultipart().forEachPart { part ->
@@ -366,56 +391,44 @@ fun Route.inboxRoutes(
             }
             part.dispose()
         }
-        val navModel = mapOf("activeNav" to "inbox") + call.currentUserModel()
         val bytes = imageBytes
         if (bytes == null || bytes.isEmpty()) {
-            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "Choose a photo to upload.") + navModel))
+            call.respond(PhotoExtractionResponse(error = "Choose a photo to upload."))
             return@post
         }
         if (bytes.size > MAX_IMPORT_PHOTO_BYTES) {
-            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "That photo is too large - try a smaller one.") + navModel))
+            call.respond(PhotoExtractionResponse(error = "That photo is too large - try a smaller one."))
             return@post
         }
         val events = try {
             geminiClient.extractCalendarEventsFromImage(bytes, mimeType ?: "image/jpeg")
         } catch (e: Exception) {
             logger.warn("Photo calendar extraction failed", e)
-            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "Couldn't read that photo - try a clearer picture.") + navModel))
+            call.respond(PhotoExtractionResponse(error = "Couldn't read that photo - try a clearer picture."))
             return@post
         }
         if (events.isEmpty()) {
-            call.respond(FreeMarkerContent("import-photo.ftl", mapOf("error" to "No events found in that photo.") + navModel))
+            call.respond(PhotoExtractionResponse(error = "No events found in that photo."))
             return@post
         }
         call.respond(
-            FreeMarkerContent(
-                "import-photo-review.ftl",
-                mapOf(
-                    "events" to events.mapIndexed { index, event ->
-                        mapOf(
-                            "index" to index,
-                            "title" to event.title,
-                            "date" to event.date,
-                            "time" to (event.time ?: ""),
-                            "description" to (event.description ?: "")
-                        )
-                    },
-                    "count" to events.size
-                ) + navModel
+            PhotoExtractionResponse(
+                events = events.map { ExtractedEventSummary(it.title, it.date, it.time, it.description) }
             )
         )
     }
 
-    // Creates one ActionItem per checked/edited row from the review step
-    // above (form fields named title_0/date_0/... - see
-    // import-photo-review.ftl) - a plain addAll (fresh random ids), same
-    // "always inserts" shape as the email pipeline, since a photo import is
-    // a one-off action with no stable id to upsert against the way a
-    // recurring calendar pull has (see ActionItem.sourcePhotoImport's doc
-    // comment). A row with its checkbox unticked, or an emptied-out title,
-    // is silently skipped rather than treated as an error - editing the
-    // review list down to "just the ones I actually want" is the whole
-    // point of this step.
+    // Creates one ActionItem per checked/edited row from the on-page review
+    // list above (form fields named title_0/date_0/... - built client-side
+    // by app.js as each photo's POST .../extract response comes back, so
+    // the indices span every photo added this visit, not just the last
+    // one) - a plain addAll (fresh random ids), same "always inserts" shape
+    // as the email pipeline, since a photo import is a one-off action with
+    // no stable id to upsert against the way a recurring calendar pull has
+    // (see ActionItem.sourcePhotoImport's doc comment). A row with its
+    // checkbox unticked, or an emptied-out title, is silently skipped
+    // rather than treated as an error - editing the review list down to
+    // "just the ones I actually want" is the whole point of this step.
     post("/inbox/import-photo/confirm") {
         val form = call.receiveParameters()
         val count = form["count"]?.toIntOrNull() ?: 0
