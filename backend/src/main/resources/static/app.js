@@ -67,7 +67,14 @@ if ('serviceWorker' in navigator) {
     try {
       const res = await fetch('/inbox/status');
       const data = await res.json();
-      if (!data.syncing && data.pending === 0) {
+      // A reload here would silently wipe out anything sitting in the
+      // photo-import review list below (see that block's own IIFE) - it's
+      // only ever in the DOM, never persisted, until #confirmForm is
+      // submitted. Skip the reload while there's something staged there;
+      // the next tick retries once it's confirmed or discarded.
+      const eventsList = document.getElementById('eventsList');
+      const hasUnreviewedPhotoEvents = eventsList && eventsList.children.length > 0;
+      if (!data.syncing && data.pending === 0 && !hasUnreviewedPhotoEvents) {
         clearInterval(inboxPoll);
         window.location.reload();
         return;
@@ -83,8 +90,10 @@ if ('serviceWorker' in navigator) {
   }, 3000);
 })();
 
-// Photo-import page (import-photo.ftl) - the FAB is a speed dial (a "+" that
-// expands into "Take a photo" / "Choose a file") rather than opening a
+// Photo-import FAB on the main inbox page (inbox.ftl) - lives right on
+// /inbox rather than a separate page, since there's no reason to navigate
+// away just to add a photo. It's a speed dial (a "+" that expands into
+// "Take a photo" / "Choose a file") rather than opening a picker
 // picker directly, since a single hidden input with both `capture` and a
 // plain gallery pick isn't reliably offered as a choice across mobile
 // browsers - two separate inputs (one with `capture="environment"`, one
@@ -112,7 +121,7 @@ if ('serviceWorker' in navigator) {
   const stagingCancel = document.getElementById('stagingCancel');
   const extractBtn = document.getElementById('extractBtn');
   const importError = document.getElementById('importError');
-  const emptyState = document.getElementById('emptyState');
+  const photoReviewSection = document.getElementById('photoReviewSection');
   const eventsList = document.getElementById('eventsList');
   const eventCount = document.getElementById('eventCount');
   const confirmBar = document.getElementById('confirmBar');
@@ -127,9 +136,13 @@ if ('serviceWorker' in navigator) {
   // title_1, ...) stay unique for #confirmForm's eventual submit.
   let nextIndex = 0;
 
+  // #photoReviewSection stays hidden entirely until the first row lands -
+  // unlike the old standalone page, /inbox already has its own empty/loading
+  // states (the processing banner, "No messages found.", etc.), so there's
+  // no separate empty-state placeholder to show here while nothing's staged.
   function updateChrome() {
     const hasEvents = eventsList.children.length > 0;
-    emptyState.hidden = hasEvents;
+    photoReviewSection.hidden = !hasEvents;
     confirmBar.hidden = !hasEvents;
     eventCount.value = String(nextIndex);
   }

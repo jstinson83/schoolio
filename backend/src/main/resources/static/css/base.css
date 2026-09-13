@@ -576,10 +576,6 @@ h1, h2, h3 {
     margin: -0.5rem 0 1rem;
 }
 
-.inbox-actions {
-    margin: 0 0 1.25rem;
-}
-
 .photo-review-item {
     display: flex;
     flex-direction: column;
@@ -606,31 +602,47 @@ h1, h2, h3 {
     gap: 1rem;
 }
 
-/* Extra bottom room on the import-photo page specifically (see its own
-   "inbox-photo-import" class on <main>, alongside the shared "inbox" one) -
-   so the fixed FAB (see .fab below) never sits on top of the last event row
-   or the confirm button. Scoped to its own class rather than overriding
-   ".inbox" directly, since inbox.ftl/dismissed.ftl share that class too and
-   have no FAB to leave room for. */
+/* Extra bottom room wherever the photo-import FAB lives (inbox.ftl only -
+   see its own "inbox-photo-import" class on <main>, alongside the shared
+   "inbox" one) - so the fixed FAB (see .fab below) never sits on top of the
+   last action item or the confirm button. Scoped to its own class rather
+   than overriding ".inbox" directly, since dismissed.ftl shares that class
+   too and has no FAB to leave room for. */
 .inbox-photo-import {
     padding-bottom: 6rem;
 }
 
-.empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-    text-align: center;
-    padding: 2.5rem 1.5rem;
+/* Ephemeral review list for a just-extracted photo's events - client-side
+   only (see app.js) until #confirmForm is submitted, so it's visually set
+   apart from the persisted "Action items" sections below it via the tag and
+   left accent border rather than looking like just another dated group. */
+.photo-review-section {
+    margin-bottom: 1.5rem;
+    padding: 0.9rem 1rem 0.2rem;
     background: var(--card-bg);
-    border: 1px dashed var(--border);
-    border-radius: 0.5rem;
-    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 0.125rem;
 }
 
-.empty-state svg {
-    opacity: 0.5;
+.photo-review-section h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.05rem;
+    margin: 0 0 0.75rem;
+}
+
+.photo-review-tag {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: var(--page-bg);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
 }
 
 /* Staging card - shown once a photo has been picked via the FAB, before

@@ -281,17 +281,29 @@ household app for one specific household, not a multi-timezone product.
 
 A third input source alongside email and the Calendar API pull, for events
 that only exist on paper/whiteboard - a physical wall calendar, a printed
-school schedule, a note on a whiteboard. `GET /inbox/import-photo` is a
-single page (not a page-per-photo flow): a "+" FAB fixed to the bottom-left
-corner expands into a two-option speed dial - "Take a photo" (a hidden
+school schedule, a note on a whiteboard. **Lives directly on the main
+`GET /inbox` page** (`inbox.ftl`), not a separate page - there used to be a
+standalone `GET /inbox/import-photo` page, removed on maintainer feedback
+("why would I want to upload from another page?"). A "+" FAB fixed to the
+bottom-left corner (present in every `/inbox` branch - needsGmailAccess,
+noSendersConfigured, and the normal content branch - since photo import
+doesn't depend on Gmail/senders any more than it ever did) expands into a
+two-option speed dial, the same pattern `foodie`'s recipe page uses for its
+own add-photo/add-file affordance: "Take a photo" (a hidden
 `accept="image/*" capture="environment"` file input, so mobile browsers open
 the camera directly) and "Choose a file" (a second hidden input, plain
 `accept="image/*"`, no `capture`, for an existing photo from the library) -
-rather than one input trying to cover both, since which of the two a bare
-`capture` input actually offers isn't consistent across mobile browsers.
-Every photo's extracted events accumulate into one on-page review list, so a
-multi-month wall calendar can be worked through a photo at a time without
-losing earlier results.
+two separate inputs rather than one trying to cover both, since which of the
+two a bare `capture` input actually offers isn't consistent across mobile
+browsers. Every photo's extracted events accumulate into one review list
+(`#photoReviewSection`, hidden until the first row lands) sitting above the
+page's persisted "Action items" sections, so a multi-month wall calendar can
+be worked through a photo at a time without losing earlier results or
+leaving `/inbox`. That review list is purely client-side state
+(`app.js`) - the inbox-sync poll loop that would otherwise reload the whole
+page once a Gmail pull/Gemini pass settles checks for it first and skips the
+reload while anything's still staged there, so it can't silently discard an
+unconfirmed review in progress.
 
 Each photo is sent to `POST /inbox/import-photo/extract` (`app.js`'s
 `fetch()`, not a plain form post - a full-page reload would wipe out

@@ -106,17 +106,17 @@ data class InboxStatusResponse(
     val failed: List<FailedMessageSummary>
 )
 
-// Wire shape for POST /inbox/import-photo/extract - the single-page photo
-// import flow (import-photo.ftl/app.js) calls this once per photo via fetch()
-// and appends [events] into the on-page review list itself, rather than the
-// server re-rendering a whole page per photo the way a plain form post would
-// (see that route's doc comment for why: multiple photos need to accumulate
-// into one review batch before anything is confirmed). [error] covers every
-// "nothing to show" case - no file chosen, a too-large upload, Gemini
-// throwing, or a real zero-event extraction - as one optional field rather
-// than a non-2xx status, so the client's fetch handling doesn't need a
-// separate branch for each: it always parses the JSON body and only ever
-// checks whether [error] is set.
+// Wire shape for POST /inbox/import-photo/extract - the photo-import FAB
+// on the main /inbox page (inbox.ftl/app.js) calls this once per photo via
+// fetch() and appends [events] into that page's own on-page review list,
+// rather than the server re-rendering a whole page per photo the way a plain
+// form post would (see that route's doc comment for why: multiple photos
+// need to accumulate into one review batch before anything is confirmed).
+// [error] covers every "nothing to show" case - no file chosen, a too-large
+// upload, Gemini throwing, or a real zero-event extraction - as one optional
+// field rather than a non-2xx status, so the client's fetch handling doesn't
+// need a separate branch for each: it always parses the JSON body and only
+// ever checks whether [error] is set.
 @Serializable
 data class ExtractedEventSummary(val title: String, val date: String, val time: String? = null, val description: String? = null)
 
@@ -347,28 +347,22 @@ fun Route.inboxRoutes(
         call.respondRedirect("/inbox/dismissed")
     }
 
-    // Single page for the photo-import feature - a camera-icon FAB (bottom
-    // corner, see import-photo.ftl/app.js) opens the camera/file picker
-    // directly, and every photo's extracted events land in one on-page
-    // review list rather than a page-per-photo flow, so taking several
-    // photos of a multi-month calendar builds up one review batch instead
-    // of restarting the page each time. The list starts empty - nothing is
-    // rendered server-side here, it's all built client-side from
-    // POST .../extract's JSON responses.
-    get("/inbox/import-photo") {
-        call.respond(
-            FreeMarkerContent(
-                "import-photo.ftl",
-                mapOf("activeNav" to "inbox") + call.currentUserModel()
-            )
-        )
-    }
-
+    // The photo-import feature lives directly on the main /inbox page
+    // (inbox.ftl/app.js) - a "+" FAB in the bottom corner expands into "Take
+    // a photo"/"Choose a file", and every photo's extracted events land in
+    // one on-page review list, so taking several photos of a multi-month
+    // calendar builds up one review batch instead of navigating away and
+    // back. No separate page for this at all (there used to be one at
+    // GET /inbox/import-photo - removed since there's no reason to leave
+    // /inbox to add a photo). The review list starts empty - nothing is
+    // rendered server-side, it's all built client-side from this route's
+    // JSON responses.
+    //
     // Called via fetch() once per photo (see app.js) rather than a plain
-    // form post, specifically so the page above can append this call's
-    // events onto whatever earlier photos already added instead of a normal
-    // form submission's whole-page reload wiping out that in-progress
-    // review list. Returns JSON, never a rendered page - PhotoExtractionResponse's
+    // form post, specifically so the page can append this call's events
+    // onto whatever earlier photos already added instead of a normal form
+    // submission's whole-page reload wiping out that in-progress review
+    // list. Returns JSON, never a rendered page - PhotoExtractionResponse's
     // doc comment covers why every "nothing to show" case (bad upload,
     // Gemini failure, zero events) is just an [error] string on an
     // otherwise-200 response rather than a non-2xx status. Doesn't persist
