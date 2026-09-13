@@ -102,6 +102,14 @@ class FakeMessageRepository : MessageRepository {
     override suspend fun markFailed(id: String, reason: String) {
         messages[id]?.let { messages[id] = it.copy(status = MessageStatus.FAILED, failureReason = reason) }
     }
+
+    override suspend fun dismiss(id: String) {
+        messages[id]?.let { messages[id] = it.copy(dismissed = true) }
+    }
+
+    override suspend fun restore(id: String) {
+        messages[id]?.let { messages[id] = it.copy(dismissed = false) }
+    }
 }
 
 class FakeActionItemRepository : ActionItemRepository {

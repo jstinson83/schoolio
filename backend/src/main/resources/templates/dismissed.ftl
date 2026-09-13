@@ -16,7 +16,7 @@
     <main class="inbox">
         <h1>Dismissed</h1>
 
-        <#if dateGroups?size == 0>
+        <#if dateGroups?size == 0 && dismissedMessages?size == 0>
             <p>Nothing dismissed yet.</p>
         <#else>
             <#list dateGroups as group>
@@ -39,6 +39,23 @@
                     </ul>
                 </section>
             </#list>
+
+            <#if dismissedMessages?size gt 0>
+                <section class="other-updates">
+                    <h2>Other updates</h2>
+                    <ul class="message-list">
+                        <#list dismissedMessages as message>
+                            <li class="message">
+                                <div class="message-subject">${message.subject}</div>
+                                <#if message.summary?has_content><p class="message-summary">${message.summary}</p></#if>
+                                <form method="post" action="/inbox/messages/${message.id}/restore" class="dismiss-form">
+                                    <button type="submit" class="btn-dismiss">Restore</button>
+                                </form>
+                            </li>
+                        </#list>
+                    </ul>
+                </section>
+            </#if>
         </#if>
     </main>
     <script src="/app.js"></script>

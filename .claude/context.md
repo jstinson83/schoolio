@@ -275,6 +275,18 @@ each with a "Restore" button. Its nav link (`nav.ftl`'s `.nav-link-subtle`)
 is deliberately understated — smaller, lower-opacity, no active-state
 background fill — since it's a review/undo page, not a primary destination.
 
+**"Other updates" messages can be dismissed too (decided).** Those items are
+`EmailMessage`s, not `ActionItem`s (see "three sections" below), so they
+needed their own `dismissed` flag rather than reusing `ActionItem`'s —
+`EmailMessage.dismissed` plus `MessageRepository.dismiss`/`restore`, same
+single-field-Firestore-update shape as the action item version. Routes are
+the message equivalent of the action item ones: `POST
+/inbox/messages/{id}/dismiss` and `POST /inbox/messages/{id}/restore`. A
+dismissed message drops out of `/inbox`'s "Other updates" section and shows
+up in its own "Other updates" section on `GET /inbox/dismissed` instead
+(alongside dismissed action items' date groups), each with the same
+"Restore" button.
+
 **`/inbox`'s main content is three sections (decided):** non-dismissed
 action items grouped by due date (`dateGroups`, unchanged/original
 behavior, chronological), then a flat **"Past events"** section
