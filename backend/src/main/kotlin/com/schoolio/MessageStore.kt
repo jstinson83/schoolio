@@ -24,7 +24,12 @@ data class EmailMessage(
     val bodyText: String,
     val status: MessageStatus = MessageStatus.PENDING,
     val summary: String? = null,
-    val failureReason: String? = null
+    val failureReason: String? = null,
+    // Same "get this off my plate, not delete it" lifecycle bit as
+    // ActionItem.dismissed, for a PROCESSED message with no action items at
+    // all (inbox.ftl's "Other updates" section) - those messages have no
+    // ActionItem of their own to carry a dismissed flag.
+    val dismissed: Boolean = false
 )
 
 interface MessageRepository {
@@ -42,6 +47,11 @@ interface MessageRepository {
     suspend fun storeIfAbsent(message: EmailMessage)
     suspend fun markProcessed(id: String, summary: String)
     suspend fun markFailed(id: String, reason: String)
+    // Flips dismissed on/off for one message - same single-field-update shape
+    // as ActionItemRepository.dismiss/restore, for the "Other updates"
+    // messages that have no ActionItem of their own to dismiss instead.
+    suspend fun dismiss(id: String)
+    suspend fun restore(id: String)
 }
 
 class FirestoreMessageStore(private val firestore: Firestore) : MessageRepository {
@@ -76,6 +86,14 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         ).get()
     }
 
+    override suspend fun dismiss(id: String) {
+        collection.document(sanitizeMessageDocId(id)).update("dismissed", true).get()
+    }
+
+    override suspend fun restore(id: String) {
+        collection.document(sanitizeMessageDocId(id)).update("dismissed", false).get()
+    }
+
     private fun DocumentSnapshot.toEmailMessage(): EmailMessage = EmailMessage(
         id = getString("messageId") ?: id,
         subject = getString("subject") ?: "",
@@ -85,7 +103,8 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         bodyText = getString("bodyText") ?: "",
         status = getString("status")?.let { runCatching { MessageStatus.valueOf(it) }.getOrNull() } ?: MessageStatus.PENDING,
         summary = getString("summary"),
-        failureReason = getString("failureReason")
+        failureReason = getString("failureReason"),
+        dismissed = getBoolean("dismissed") ?: false
     )
 
     private fun messageToMap(message: EmailMessage): Map<String, Any?> = mapOf(
@@ -97,7 +116,8 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         "bodyText" to message.bodyText,
         "status" to message.status.name,
         "summary" to message.summary,
-        "failureReason" to message.failureReason
+        "failureReason" to message.failureReason,
+        "dismissed" to message.dismissed
     )
 }
 

@@ -368,6 +368,48 @@ class InboxTest {
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
     }
 
+    // Same dismiss/restore flow as action items, but for an "Other updates"
+    // message (a PROCESSED message with no action items at all) - see
+    // InboxRoutes.kt's POST /inbox/messages/{id}/dismiss and /restore.
+    @Test
+    fun testDismissingAnOtherUpdateMessageMovesItToTheDismissedPageAndRestoreBringsItBack() = testApplication {
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        messageStore.storeIfAbsent(
+            EmailMessage(
+                id = "msg-1",
+                subject = "School newsletter",
+                from = "school@example.com",
+                date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                bodyText = "Nothing actionable here.",
+                status = MessageStatus.PROCESSED,
+                summary = "Just a newsletter."
+            )
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), messageStore = messageStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
+
+        val dismissResponse = client.submitForm(url = "/inbox/messages/msg-1/dismiss", formParameters = Parameters.build {})
+        assertEquals(HttpStatusCode.Found, dismissResponse.status)
+        assertEquals("/inbox", dismissResponse.headers[HttpHeaders.Location])
+
+        assertFalse(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertTrue(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
+
+        val restoreResponse = client.submitForm(url = "/inbox/messages/msg-1/restore", formParameters = Parameters.build {})
+        assertEquals(HttpStatusCode.Found, restoreResponse.status)
+        assertEquals("/inbox/dismissed", restoreResponse.headers[HttpHeaders.Location])
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
+    }
+
     // Not prominent (see nav.ftl's nav-link-subtle), but always present so
     // dismissed items are never unreachable.
     @Test

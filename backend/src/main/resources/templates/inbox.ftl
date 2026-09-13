@@ -90,6 +90,9 @@
                             <li class="message">
                                 <div class="message-subject">${message.subject}</div>
                                 <#if message.summary?has_content><p class="message-summary">${message.summary}</p></#if>
+                                <form method="post" action="/inbox/messages/${message.id}/dismiss" class="dismiss-form">
+                                    <button type="submit" class="btn-dismiss">Dismiss</button>
+                                </form>
                             </li>
                         </#list>
                     </ul>

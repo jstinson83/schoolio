@@ -193,7 +193,7 @@ fun Route.inboxRoutes(
             .filterNot { it.dismissed }
             .partition { it.isPastDue(today) }
         val processedWithNoActionItems = messages.filter {
-            it.status == MessageStatus.PROCESSED && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
+            it.status == MessageStatus.PROCESSED && !it.dismissed && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
         }
         val failedMessages = messages.filter { it.status == MessageStatus.FAILED }
         val pendingMessages = messages.filter { it.status == MessageStatus.PENDING }
@@ -205,7 +205,7 @@ fun Route.inboxRoutes(
                     "dateGroups" to buildDateGroups(upcomingActionItems, messagesById),
                     "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
-                    "noActionMessages" to processedWithNoActionItems.map { mapOf("subject" to it.subject, "summary" to it.summary) },
+                    "noActionMessages" to processedWithNoActionItems.map { mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary) },
                     "failedMessages" to failedMessages.map { mapOf("subject" to it.subject, "reason" to it.failureReason) },
                     "pendingCount" to pendingMessages.size
                 ) + navModel + call.currentUserModel()
@@ -224,11 +224,13 @@ fun Route.inboxRoutes(
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
         val dismissedItems = actionItemStore.getAll().filter { it.dismissed }
+        val dismissedMessages = messages.filter { it.dismissed }
         call.respond(
             FreeMarkerContent(
                 "dismissed.ftl",
                 mapOf(
                     "dateGroups" to buildDateGroups(dismissedItems, messagesById),
+                    "dismissedMessages" to dismissedMessages.map { mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary) },
                     "activeNav" to "dismissed"
                 ) + call.currentUserModel()
             )
@@ -246,6 +248,19 @@ fun Route.inboxRoutes(
 
     post("/inbox/action-items/{id}/restore") {
         call.parameters["id"]?.let { actionItemStore.restore(it) }
+        call.respondRedirect("/inbox/dismissed")
+    }
+
+    // Same dismiss/restore shape as action items above, for an "Other
+    // updates" message (see inbox.ftl) that has no ActionItem of its own to
+    // carry the dismissed flag.
+    post("/inbox/messages/{id}/dismiss") {
+        call.parameters["id"]?.let { messageStore.dismiss(it) }
+        call.respondRedirect("/inbox")
+    }
+
+    post("/inbox/messages/{id}/restore") {
+        call.parameters["id"]?.let { messageStore.restore(it) }
         call.respondRedirect("/inbox/dismissed")
     }
 
