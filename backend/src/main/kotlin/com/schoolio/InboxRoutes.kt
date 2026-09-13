@@ -440,14 +440,14 @@ private suspend fun pullAndStoreNewMessages(
 // watermark exists for email to keep an otherwise-unboundedly-large search
 // narrow (see that function's doc comment); the calendar window is already
 // small and doesn't grow, so there's no accumulating history to avoid
-// re-scanning. Dedup instead comes from ActionItemRepository.storeIfAbsent,
-// keyed on the calendar event's own uid, same "safe to re-fetch, no-ops on
-// what's already stored" shape as MessageRepository.storeIfAbsent. No Gemini
-// step for these - a calendar event already carries a title/date natively,
-// unlike an EmailMessage's free-text body that needs the LLM to find one.
-// (Not yet handled: an already-stored event whose time/title changes on the
-// calendar after this first pulled it - storeIfAbsent only guards against
-// duplicate inserts, not updates - see context.md's reconciliation note.)
+// re-scanning. Uses ActionItemRepository.upsertFromCalendar, keyed on the
+// calendar event's own uid - not just dedup (MessageRepository.storeIfAbsent's
+// "skip if already stored" shape doesn't fit here), because Calendar is the
+// ongoing source of truth and an event can be retitled/rescheduled between
+// pulls; every pull refreshes the stored copy rather than only inserting it
+// once. No Gemini step for these - a calendar event already carries a
+// title/date natively, unlike an EmailMessage's free-text body that needs
+// the LLM to find one.
 private suspend fun pullAndStoreCalendarEvents(
     email: String,
     calendarClient: CalendarClient,
@@ -457,7 +457,7 @@ private suspend fun pullAndStoreCalendarEvents(
     val until = now.plus(Duration.ofDays(CALENDAR_LOOKAHEAD_DAYS))
     val events = calendarClient.fetchEvents(email, now, until)
     for (event in events) {
-        actionItemStore.storeIfAbsent(
+        actionItemStore.upsertFromCalendar(
             ActionItem(
                 id = "calendar-${event.uid}",
                 sourceCalendarEventId = event.uid,
