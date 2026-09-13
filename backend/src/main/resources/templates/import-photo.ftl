@@ -15,7 +15,7 @@
     <#include "nav.ftl">
     <main class="inbox inbox-photo-import">
         <h1>Import from a photo</h1>
-        <p>Tap the camera icon in the corner to take (or choose) a photo of a
+        <p>Tap the <strong>+</strong> in the corner to take or choose a photo of a
             calendar - a paper wall calendar, a printed school schedule, or a
             whiteboard. Add as many photos as you like; everything Schoolio reads
             off lands in the list below for you to review before it's added.</p>
@@ -38,7 +38,7 @@
 
         <div id="emptyState" class="empty-state">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A1.5 1.5 0 0 1 9.4 4h5.2a1.5 1.5 0 0 1 1.3.75L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="13" r="3.2" stroke="currentColor" stroke-width="1.5"/></svg>
-            <span>No events yet - tap the camera icon to add your first photo.</span>
+            <span>No events yet - tap the + to add your first photo.</span>
         </div>
 
         <form id="confirmForm" method="post" action="/inbox/import-photo/confirm">
@@ -51,13 +51,29 @@
         </form>
     </main>
 
-    <button type="button" id="fabButton" class="fab" aria-label="Add a photo of a calendar">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A1.5 1.5 0 0 1 9.4 4h5.2a1.5 1.5 0 0 1 1.3.75L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" stroke="currentColor" stroke-width="1.8"/>
-            <circle cx="12" cy="13" r="3.4" stroke="currentColor" stroke-width="1.8"/>
-        </svg>
-    </button>
-    <input type="file" id="photoInput" name="photo" accept="image/*" capture="environment" hidden>
+    <div id="fabContainer" class="fab-container">
+        <div id="fabMenu" class="fab-menu" hidden>
+            <button type="button" id="cameraOption" class="fab-option">
+                <span class="fab-option-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h1.2l.9-1.5A1.5 1.5 0 0 1 9.4 4h5.2a1.5 1.5 0 0 1 1.3.75L16.8 6H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="13" r="3.2" stroke="currentColor" stroke-width="1.7"/></svg>
+                </span>
+                Take a photo
+            </button>
+            <button type="button" id="libraryOption" class="fab-option">
+                <span class="fab-option-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="10" r="1.5" stroke="currentColor" stroke-width="1.7"/><path d="M21 16.5 15.6 11a1 1 0 0 0-1.4 0L7 18.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                </span>
+                Choose a file
+            </button>
+        </div>
+        <button type="button" id="fabButton" class="fab" aria-haspopup="true" aria-expanded="false" aria-label="Add a photo of a calendar">
+            <svg id="fabIcon" width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+            </svg>
+        </button>
+    </div>
+    <input type="file" id="cameraInput" name="photo" accept="image/*" capture="environment" hidden>
+    <input type="file" id="libraryInput" name="photo" accept="image/*" hidden>
 
     <script src="/app.js"></script>
 </body>

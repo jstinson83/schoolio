@@ -83,19 +83,29 @@ if ('serviceWorker' in navigator) {
   }, 3000);
 })();
 
-// Photo-import page (import-photo.ftl) - the FAB opens the camera/file
-// picker, and each photo's POST /inbox/import-photo/extract response is
-// appended into #eventsList in place, so several photos build up one
-// review batch before the confirm form at the bottom is ever submitted
-// (see InboxRoutes.kt's doc comment on that route for why it's fetch()-driven
-// instead of a plain form post). #confirmForm's own submit is a normal
-// full-page POST, same as every other form in this app - only the
-// per-photo extraction step needs JS at all.
+// Photo-import page (import-photo.ftl) - the FAB is a speed dial (a "+" that
+// expands into "Take a photo" / "Choose a file") rather than opening a
+// picker directly, since a single hidden input with both `capture` and a
+// plain gallery pick isn't reliably offered as a choice across mobile
+// browsers - two separate inputs (one with `capture="environment"`, one
+// without) makes the choice explicit instead of leaving it to whatever a
+// given browser happens to default to. Each photo's
+// POST /inbox/import-photo/extract response is appended into #eventsList in
+// place, so several photos build up one review batch before the confirm
+// form at the bottom is ever submitted (see InboxRoutes.kt's doc comment on
+// that route for why it's fetch()-driven instead of a plain form post).
+// #confirmForm's own submit is a normal full-page POST, same as every other
+// form in this app - only the per-photo extraction step needs JS at all.
 (function () {
   const fabButton = document.getElementById('fabButton');
   if (!fabButton) return;
 
-  const photoInput = document.getElementById('photoInput');
+  const fabContainer = document.getElementById('fabContainer');
+  const fabMenu = document.getElementById('fabMenu');
+  const cameraOption = document.getElementById('cameraOption');
+  const libraryOption = document.getElementById('libraryOption');
+  const cameraInput = document.getElementById('cameraInput');
+  const libraryInput = document.getElementById('libraryInput');
   const stagingCard = document.getElementById('stagingCard');
   const stagingName = document.getElementById('stagingName');
   const stagingStatus = document.getElementById('stagingStatus');
@@ -106,6 +116,11 @@ if ('serviceWorker' in navigator) {
   const eventsList = document.getElementById('eventsList');
   const eventCount = document.getElementById('eventCount');
   const confirmBar = document.getElementById('confirmBar');
+
+  // The staged File object itself, not "whichever input still has a value" -
+  // simpler than tracking which of the two inputs was last used, since only
+  // one photo is ever staged at a time.
+  let currentFile = null;
 
   // Bumped for every row ever added this page visit, never reused - even
   // across several photos - so each row's form field names (title_0,
@@ -162,11 +177,43 @@ if ('serviceWorker' in navigator) {
     importError.hidden = false;
   }
 
-  fabButton.addEventListener('click', () => photoInput.click());
+  function openMenu() {
+    fabMenu.hidden = false;
+    fabButton.setAttribute('aria-expanded', 'true');
+  }
 
-  photoInput.addEventListener('change', () => {
-    const file = photoInput.files && photoInput.files[0];
+  function closeMenu() {
+    fabMenu.hidden = true;
+    fabButton.setAttribute('aria-expanded', 'false');
+  }
+
+  fabButton.addEventListener('click', () => {
+    if (fabMenu.hidden) openMenu(); else closeMenu();
+  });
+
+  // Closes the speed dial on an outside click/tap or Escape - the two
+  // options are the only affordance while it's open, so anything else the
+  // user does should just dismiss it rather than leaving it stuck open.
+  document.addEventListener('click', (e) => {
+    if (!fabMenu.hidden && !fabContainer.contains(e.target)) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !fabMenu.hidden) closeMenu();
+  });
+
+  cameraOption.addEventListener('click', () => {
+    closeMenu();
+    cameraInput.click();
+  });
+
+  libraryOption.addEventListener('click', () => {
+    closeMenu();
+    libraryInput.click();
+  });
+
+  function onFileChosen(file) {
     if (!file) return;
+    currentFile = file;
     importError.hidden = true;
     stagingName.textContent = file.name || 'calendar-photo.jpg';
     stagingStatus.textContent = 'Ready to extract';
@@ -174,16 +221,22 @@ if ('serviceWorker' in navigator) {
     extractBtn.textContent = 'Extract events';
     stagingCard.hidden = false;
     stagingCard.scrollIntoView({ block: 'nearest' });
-  });
+  }
 
-  stagingCancel.addEventListener('click', () => {
-    photoInput.value = '';
+  cameraInput.addEventListener('change', () => onFileChosen(cameraInput.files && cameraInput.files[0]));
+  libraryInput.addEventListener('change', () => onFileChosen(libraryInput.files && libraryInput.files[0]));
+
+  function resetStaging() {
+    currentFile = null;
+    cameraInput.value = '';
+    libraryInput.value = '';
     stagingCard.hidden = true;
-  });
+  }
+
+  stagingCancel.addEventListener('click', resetStaging);
 
   extractBtn.addEventListener('click', async () => {
-    const file = photoInput.files && photoInput.files[0];
-    if (!file) return;
+    if (!currentFile) return;
     extractBtn.disabled = true;
     extractBtn.textContent = 'Extracting…';
     stagingStatus.textContent = 'Reading the photo…';
@@ -191,7 +244,7 @@ if ('serviceWorker' in navigator) {
 
     try {
       const formData = new FormData();
-      formData.append('photo', file);
+      formData.append('photo', currentFile);
       const res = await fetch('/inbox/import-photo/extract', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.error) {
@@ -203,8 +256,7 @@ if ('serviceWorker' in navigator) {
     } catch (e) {
       showError("Couldn't reach the server - check your connection and try again.");
     } finally {
-      stagingCard.hidden = true;
-      photoInput.value = '';
+      resetStaging();
     }
   });
 

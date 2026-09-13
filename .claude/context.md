@@ -282,13 +282,16 @@ household app for one specific household, not a multi-timezone product.
 A third input source alongside email and the Calendar API pull, for events
 that only exist on paper/whiteboard - a physical wall calendar, a printed
 school schedule, a note on a whiteboard. `GET /inbox/import-photo` is a
-single page (not a page-per-photo flow): a camera-icon FAB fixed to the
-bottom-left corner opens the camera/file picker directly (a hidden
-`accept="image/*" capture="environment"` file input - mobile browsers open
-the camera itself rather than a picker, since "take a photo" is the primary
-use case), and every photo's extracted events accumulate into one on-page
-review list, so a multi-month wall calendar can be worked through a photo at
-a time without losing earlier results.
+single page (not a page-per-photo flow): a "+" FAB fixed to the bottom-left
+corner expands into a two-option speed dial - "Take a photo" (a hidden
+`accept="image/*" capture="environment"` file input, so mobile browsers open
+the camera directly) and "Choose a file" (a second hidden input, plain
+`accept="image/*"`, no `capture`, for an existing photo from the library) -
+rather than one input trying to cover both, since which of the two a bare
+`capture` input actually offers isn't consistent across mobile browsers.
+Every photo's extracted events accumulate into one on-page review list, so a
+multi-month wall calendar can be worked through a photo at a time without
+losing earlier results.
 
 Each photo is sent to `POST /inbox/import-photo/extract` (`app.js`'s
 `fetch()`, not a plain form post - a full-page reload would wipe out
