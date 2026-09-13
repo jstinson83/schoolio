@@ -161,6 +161,35 @@ class GoogleCalendarApiClientTest {
         assertNull(events.single().description)
     }
 
+    // Forwarded/pasted emails also drag along a long underscore divider (an
+    // `<hr>`-style separator in the original HTML) - meaningless once
+    // rendered as plain text, so it's stripped alongside the disclaimer
+    // footer (see CalendarClient.kt's stripSeparatorLines).
+    @Test
+    fun testFetchEventsStripsLongSeparatorLineFromDescription() = runBlocking {
+        val separator = "_".repeat(75)
+        val responseJson = """
+            {
+              "items": [
+                {
+                  "id": "event-1",
+                  "summary": "Field Trip - Science Museum",
+                  "description": "Please pack a lunch and wear comfortable shoes.\n\n$separator\n\nSee you there!",
+                  "start": {"dateTime": "2026-09-20T09:00:00-04:00"}
+                }
+              ]
+            }
+        """.trimIndent()
+        val httpClient = mockClient {
+            respond(responseJson, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+        }
+
+        val events = GoogleCalendarApiClient(httpClient, fakeCredentials())
+            .fetchEvents("test@example.com", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-30T00:00:00Z"))
+
+        assertEquals("Please pack a lunch and wear comfortable shoes.\n\n\nSee you there!", events.single().description)
+    }
+
     @Test
     fun testFetchEventsThrowsOnNonSuccessResponseInsteadOfSilentlyReturningEmpty() = runBlocking {
         val httpClient = mockClient {
