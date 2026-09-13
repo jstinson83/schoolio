@@ -129,12 +129,34 @@ private data class CalendarApiEvent(
         return CalendarEvent(
             uid = id,
             summary = summary ?: "(no title)",
-            description = description,
+            description = description?.let { stripDisclaimerFooter(it) }?.ifBlank { null },
             start = instant,
             allDay = startDateTime.dateTime == null,
             end = end?.toInstant()
         )
     }
+}
+
+// A school calendar invite is often created by forwarding/pasting an email,
+// which drags that org's email confidentiality disclaimer along into the
+// event description - not useful for a household reading their kids'
+// schedule, and long/ugly enough to be worth stripping rather than just
+// displaying it raw (see CLAUDE.md's gotcha entry - hit for real with a
+// bilingual English/French disclaimer). Cuts the description at the first
+// recognized marker phrase, keeping any genuine content that came before it
+// (there usually isn't any - the disclaimer is normally the entire
+// description). Not a general HTML/boilerplate stripper - just these two
+// specific phrasings until a different district's wording shows up.
+private val disclaimerMarkers = listOf(
+    "this e-mail message",
+    "this email message",
+    "le présent message électronique"
+)
+
+private fun stripDisclaimerFooter(description: String): String {
+    val lower = description.lowercase()
+    val cutIndex = disclaimerMarkers.mapNotNull { marker -> lower.indexOf(marker).takeIf { it >= 0 } }.minOrNull()
+    return if (cutIndex != null) description.substring(0, cutIndex).trim() else description.trim()
 }
 
 // Google Calendar API's EventDateTime shape: a timed event sets dateTime (an
