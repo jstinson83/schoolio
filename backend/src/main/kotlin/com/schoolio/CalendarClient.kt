@@ -128,7 +128,7 @@ private data class CalendarApiEvent(
         return CalendarEvent(
             uid = id,
             summary = summary ?: "(no title)",
-            description = description?.let { stripDisclaimerFooter(it) }?.ifBlank { null },
+            description = description?.let { stripSeparatorLines(it) }?.let { stripDisclaimerFooter(it) }?.ifBlank { null },
             start = instant,
             allDay = startDateTime.dateTime == null,
             end = end?.toInstant()
@@ -157,6 +157,20 @@ private fun stripDisclaimerFooter(description: String): String {
     val cutIndex = disclaimerMarkers.mapNotNull { marker -> lower.indexOf(marker).takeIf { it >= 0 } }.minOrNull()
     return if (cutIndex != null) description.substring(0, cutIndex).trim() else description.trim()
 }
+
+// A forwarded/pasted email also tends to drag along a long visual divider -
+// a run of underscores or dashes email clients render as an `<hr>`-style
+// separator - which is meaningless once the surrounding HTML is gone and
+// just looks like a stray wall of dashes in the description. Matches a
+// whole line of nothing but one repeated separator character (10+ of it,
+// long enough to not catch a real "---" used as punctuation) and drops it.
+private val separatorLine = Regex("^[-_]{10,}$")
+
+private fun stripSeparatorLines(description: String): String =
+    description.lines()
+        .filterNot { separatorLine.matches(it.trim()) }
+        .joinToString("\n")
+        .trim()
 
 // Google Calendar API's EventDateTime shape: a timed event sets dateTime (an
 // RFC3339 timestamp with an explicit offset, e.g. "2026-09-20T13:00:00-04:00"
