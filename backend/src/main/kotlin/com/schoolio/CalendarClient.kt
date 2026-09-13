@@ -59,7 +59,19 @@ class CalDavCalendarClient(
                 contentType(ContentType.Application.Xml)
                 setBody(calendarQueryBody(from, until))
             }
-            parseEvents(response.bodyAsText())
+            val body = response.bodyAsText()
+            // A non-2xx response (401 - basic auth/app password rejected, 404
+            // - wrong calendar id/URL, etc.) still has a body, and
+            // parseEvents would just find no <calendar-data> tags in it and
+            // silently return an empty list - indistinguishable from "no
+            // upcoming events" at every call site above this. Fail loudly
+            // instead so a real problem shows up in scheduleSync's caught
+            // exception (see InboxRoutes.kt) rather than looking like an
+            // empty calendar.
+            if (!response.status.isSuccess()) {
+                error("CalDAV request to $baseUrl failed: ${response.status} - ${body.take(500)}")
+            }
+            parseEvents(body)
         }
 
     private fun basicAuthHeader(email: String, appPassword: String): String =

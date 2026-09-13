@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -47,6 +48,8 @@ const val DEFAULT_INBOX_RESYNC_COOLDOWN_MS = 60_000L
 // needs). Hardcoded rather than a settings-form field for now - one fixed
 // value is enough until there's a reason to make it configurable.
 const val CALENDAR_LOOKAHEAD_DAYS = 7L
+
+private val logger = LoggerFactory.getLogger("InboxRoutes")
 
 // Wire shapes for GET /inbox/status - a plain mapOf(...) mixing Strings/Ints/
 // nested lists is a Map<String, Any>, which kotlinx.serialization can't
@@ -174,13 +177,17 @@ fun Route.inboxRoutes(
             } catch (e: Exception) {
                 // Best-effort - a transient IMAP/CalDAV failure shouldn't
                 // leave this user stuck "syncing" forever (see isSyncing
-                // above); the next eligible GET /inbox just retries. Never
-                // surfaced to the user today - no manual retry/error banner
-                // for a failed pull yet, same "not built here yet" gap as
-                // message processing's own FAILED state predates a manual
-                // retry. A calendar failure here means an email pull that
-                // already succeeded still gets processed below - the two
-                // pulls aren't rolled back together.
+                // above); the next eligible GET /inbox just retries. Still
+                // logged (not just swallowed) - a failure here used to leave
+                // no trace at all, which made "the calendar app password is
+                // wrong/rejected" indistinguishable from "there's genuinely
+                // nothing upcoming" from the outside. No manual retry/error
+                // banner for a failed pull yet, same "not built here yet"
+                // gap as message processing's own FAILED state predates a
+                // manual retry. A calendar failure here means an email pull
+                // that already succeeded still gets processed below - the
+                // two pulls aren't rolled back together.
+                logger.warn("Inbox sync failed for user {}", userId, e)
             } finally {
                 lastSyncedAt[userId] = Instant.now()
             }

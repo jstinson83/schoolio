@@ -103,4 +103,24 @@ class CalDavCalendarClientTest {
 
         assertEquals(emptyList(), events)
     }
+
+    // A rejected app password (or any other non-2xx response) has a body
+    // too, just not one with any <calendar-data> in it - before this check
+    // existed, fetchEvents would parse that body the same as a genuinely
+    // empty calendar and silently return an empty list, making "the app
+    // password is wrong" indistinguishable from "nothing's upcoming" from
+    // every caller above it (see CalDavCalendarClient.fetchEvents' doc
+    // comment on the fix).
+    @Test
+    fun testFetchEventsThrowsOnNonSuccessResponseInsteadOfSilentlyReturningEmpty() = runBlocking {
+        val httpClient = mockClient {
+            respond("Unauthorized", HttpStatusCode.Unauthorized)
+        }
+
+        val exception = assertFailsWith<IllegalStateException> {
+            CalDavCalendarClient(httpClient)
+                .fetchEvents("test@example.com", "fake-app-password", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-08T00:00:00Z"))
+        }
+        assertTrue(exception.message?.contains("401") == true)
+    }
 }
