@@ -13,12 +13,11 @@ import kotlin.test.*
 // of InboxTest) - it's reachable by any signed-in user, so these tests use
 // plain signInFakeUser() rather than signInFakeUserWithGmailConnected.
 //
-// The page itself (GET /inbox/import-photo) is a single-page FAB flow now -
-// a photo goes to POST /inbox/import-photo/extract via fetch() and its JSON
-// response is what app.js appends into the on-page review list, so these
-// tests exercise that JSON endpoint directly rather than a server-rendered
-// review page (see InboxRoutes.kt's doc comment on that route for why it's
-// JSON, not HTML).
+// There's no separate page for this at all - the FAB lives directly on
+// GET /inbox (see inbox.ftl/app.js). A photo goes to
+// POST /inbox/import-photo/extract via fetch() and its JSON response is
+// what app.js appends into the on-page review list, so most of these tests
+// exercise that JSON endpoint directly rather than a server-rendered page.
 class ImportPhotoTest {
     private fun fakePhotoFormData(fileName: String = "calendar.jpg", contentType: String = "image/jpeg", bytes: ByteArray = byteArrayOf(1, 2, 3, 4)) =
         formData {
@@ -29,13 +28,21 @@ class ImportPhotoTest {
         }
 
     @Test
-    fun testUploadPageIsReachableForAnySignedInUserWithoutGmailConnected() = testApplication {
+    fun testFabIsOnMainInboxPageEvenWithoutGmailConnected() = testApplication {
         testModule()
         val client = signInFakeUser()
 
-        val response = client.get("/inbox/import-photo")
+        // No app password saved - GET /inbox takes the needsGmailAccess
+        // branch (see InboxRoutes.kt), which renders none of the usual
+        // action-item content. The FAB markup lives outside that branch
+        // entirely, so it should still be there.
+        val response = client.get("/inbox")
         assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(response.bodyAsText().contains("Import from a photo"))
+        val body = response.bodyAsText()
+        assertTrue(body.contains("Gmail isn't connected yet"))
+        assertTrue(body.contains("id=\"fabButton\""))
+        assertTrue(body.contains("Take a photo"))
+        assertTrue(body.contains("Choose a file"))
     }
 
     @Test
