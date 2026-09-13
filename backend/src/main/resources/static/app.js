@@ -15,10 +15,39 @@ if ('serviceWorker' in navigator) {
   const menu = document.getElementById('navMenu');
   if (!toggle || !menu) return;
 
+  // Menu stays in the DOM (not [hidden]) while the max-height/opacity
+  // transition in base.css runs, then gets [hidden] again once it's fully
+  // closed so it's out of the tab order and a11y tree at rest.
+  let closeTimer = null;
+
+  function openMenu() {
+    clearTimeout(closeTimer);
+    menu.hidden = false;
+    // Force a layout flush so the browser sees the collapsed state before
+    // the open class flips it - otherwise the two styles land in the same
+    // frame and there's nothing to transition from.
+    void menu.offsetHeight;
+    menu.classList.add('is-open');
+    toggle.classList.add('is-open');
+    toggle.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeMenu() {
+    menu.classList.remove('is-open');
+    toggle.classList.remove('is-open');
+    toggle.setAttribute('aria-expanded', 'false');
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      menu.hidden = true;
+    }, 220);
+  }
+
   toggle.addEventListener('click', () => {
-    const open = menu.hidden;
-    menu.hidden = !open;
-    toggle.setAttribute('aria-expanded', String(open));
+    if (menu.classList.contains('is-open')) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
   });
 })();
 
