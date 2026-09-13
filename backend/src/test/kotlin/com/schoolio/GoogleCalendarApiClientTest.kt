@@ -97,7 +97,10 @@ class GoogleCalendarApiClientTest {
         val allDay = events.single { it.uid == "event-2" }
         assertEquals("Teacher PD Day - No School", allDay.summary)
         assertTrue(allDay.allDay)
-        assertEquals(Instant.parse("2026-09-25T00:00:00Z"), allDay.start)
+        // Anchored at midnight HOUSEHOLD_ZONE (America/New_York), not UTC -
+        // 2026-09-25 is EDT (UTC-4) - see EventDateTime.toInstant's doc
+        // comment on why it has to match InboxRoutes.kt's formatting zone.
+        assertEquals(Instant.parse("2026-09-25T04:00:00Z"), allDay.start)
     }
 
     // School calendar invites are often created by forwarding/pasting an

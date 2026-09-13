@@ -12,7 +12,6 @@ import kotlinx.serialization.json.Json
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
 
 // What callers need from a pulled calendar event - same "trimmed to what we
 // use" shape as GmailMessage in GmailClient.kt. allDay distinguishes a
@@ -163,12 +162,19 @@ private fun stripDisclaimerFooter(description: String): String {
 // RFC3339 timestamp with an explicit offset, e.g. "2026-09-20T13:00:00-04:00"
 // - never a bare "Z"-only Instant, so this parses via OffsetDateTime, not
 // Instant.parse), an all-day event sets date instead (a bare "yyyy-MM-dd"
-// with no time or zone at all).
+// with no time or zone at all - not tied to any real moment, so anchoring it
+// at midnight *has* to pick some zone). Anchored at HOUSEHOLD_ZONE
+// (InboxRoutes.kt) rather than UTC specifically so it round-trips correctly:
+// InboxRoutes.kt's allDayDateFormatter formats this Instant back into a
+// yyyy-MM-dd string using that same zone, and only using the *same* zone on
+// both ends guarantees the date doesn't shift by a day - anchoring here at
+// UTC and formatting there in Eastern would recover the wrong day, since
+// midnight UTC is already the evening before in Eastern.
 @Serializable
 private data class EventDateTime(val dateTime: String? = null, val date: String? = null) {
     fun toInstant(): Instant? = when {
         dateTime != null -> runCatching { OffsetDateTime.parse(dateTime).toInstant() }.getOrNull()
-        date != null -> runCatching { LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant() }.getOrNull()
+        date != null -> runCatching { LocalDate.parse(date).atStartOfDay(HOUSEHOLD_ZONE).toInstant() }.getOrNull()
         else -> null
     }
 }
