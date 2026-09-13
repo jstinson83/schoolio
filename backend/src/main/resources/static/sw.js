@@ -7,7 +7,7 @@
 //
 // Bump CACHE_NAME whenever a file in STATIC_ASSETS changes, so browsers
 // detect the update and repopulate the cache with the new files.
-const CACHE_NAME = 'schoolio-static-v2';
+const CACHE_NAME = 'schoolio-static-v3';
 
 const STATIC_ASSETS = [
   '/css/base.css',
