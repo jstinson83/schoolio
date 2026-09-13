@@ -11,6 +11,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.LocalDate
+import java.util.Base64
 
 // Gemini's raw extraction output for one action item - an input to building
 // the persisted ActionItem (see ActionItemStore.kt), not that type itself:
@@ -25,8 +27,21 @@ data class ExtractedActionItem(val title: String, val description: String, val d
 
 data class EmailExtraction(val summary: String, val actionItems: List<ExtractedActionItem>)
 
+// Gemini's raw output for one event read off a photographed calendar (a
+// physical wall/paper calendar, printed school schedule, or whiteboard) - the
+// photo-import counterpart of ExtractedActionItem above. Unlike an email,
+// there's no "nothing actionable" case worth modeling: a calendar entry is
+// itself the thing to track, so date is non-optional here (Gemini's prompt
+// asks it to skip anything it can't date confidently rather than emit a
+// dateless entry) - InboxRoutes still lets a household member edit/reject
+// each one on the review step before anything is persisted, since photo
+// OCR/handwriting reads are much more error-prone than either the email or
+// Calendar-API extraction paths.
+data class ExtractedCalendarEvent(val title: String, val date: String, val time: String? = null, val description: String? = null)
+
 interface GeminiClient {
     suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction
+    suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent>
 }
 
 @Serializable
@@ -35,8 +50,17 @@ private data class GenerateContentRequest(val contents: List<GeminiContent>, val
 @Serializable
 private data class GeminiContent(val parts: List<GeminiPart>)
 
+// text and inlineData are mutually exclusive per the Gemini API's own Part
+// union - a text-only request (extract) only ever sets text; the photo path
+// (extractCalendarEventsFromImage) sends one text part (the prompt) and one
+// inlineData part (the photo) in the same GeminiContent. Field names already
+// match the API's own camelCase JSON (inlineData/mimeType), same convention
+// as responseMimeType/responseSchema below, so no @SerialName is needed.
 @Serializable
-private data class GeminiPart(val text: String)
+private data class GeminiPart(val text: String? = null, val inlineData: GeminiInlineData? = null)
+
+@Serializable
+private data class GeminiInlineData(val mimeType: String, val data: String)
 
 @Serializable
 private data class GeminiGenerationConfig(val responseMimeType: String = "application/json", val responseSchema: JsonObject)
@@ -75,6 +99,36 @@ private val extractionSchema = buildJsonObject {
         })
     })
     put("required", JsonArray(listOf(JsonPrimitive("summary"), JsonPrimitive("actionItems"))))
+}
+
+@Serializable
+private data class CalendarEventsExtractionPayload(val events: List<CalendarEventPayload> = emptyList())
+
+@Serializable
+private data class CalendarEventPayload(val title: String, val date: String, val time: String? = null, val description: String? = null)
+
+// Same OBJECT/STRING/ARRAY schema-format convention as extractionSchema
+// above - date is the only required field beyond title (see
+// ExtractedCalendarEvent's doc comment on why there's no "nothing
+// actionable" case here the way EmailExtraction has one).
+private val calendarEventsExtractionSchema = buildJsonObject {
+    put("type", "OBJECT")
+    put("properties", buildJsonObject {
+        put("events", buildJsonObject {
+            put("type", "ARRAY")
+            put("items", buildJsonObject {
+                put("type", "OBJECT")
+                put("properties", buildJsonObject {
+                    put("title", buildJsonObject { put("type", "STRING") })
+                    put("date", buildJsonObject { put("type", "STRING") })
+                    put("time", buildJsonObject { put("type", "STRING") })
+                    put("description", buildJsonObject { put("type", "STRING") })
+                })
+                put("required", JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("date"))))
+            })
+        })
+    })
+    put("required", JsonArray(listOf(JsonPrimitive("events"))))
 }
 
 // Plain REST calls against Gemini's API, not a provider SDK - same
@@ -125,6 +179,60 @@ class RestGeminiClient(
             summary = payload.summary,
             actionItems = payload.actionItems.map { ExtractedActionItem(it.title, it.description, it.dueDate, it.dueTime) }
         )
+    }
+
+    // Same generateContent endpoint as extract() above, but the request's
+    // parts are (prompt text, inlineData photo) instead of (prompt text
+    // alone) - Gemini's vision input is just another Part in the same
+    // request shape, not a different endpoint. today anchors the prompt's
+    // year-inference instruction (a calendar photo showing only day-of-week/
+    // day-of-month, e.g. a whiteboard's "Tue 9/15" with no year printed
+    // anywhere) - HOUSEHOLD_ZONE (InboxRoutes.kt, same package) rather than
+    // the server's local zone or UTC, matching every other "what day is it"
+    // decision in this app.
+    override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> {
+        val today = LocalDate.now(HOUSEHOLD_ZONE)
+        val prompt = """
+            You are helping a parent transcribe events from a photo of a calendar - this
+            could be a physical wall/paper calendar, a printed school schedule, or a
+            whiteboard. Extract every event, appointment, or reminder that's legibly
+            written on it. For each one, give:
+            - title: a short label (a few words).
+            - date: the event's date as YYYY-MM-DD. If the photo shows a month/year
+              header, use it. If only day numbers or a day-of-week are visible with no
+              year printed anywhere, infer the year using today's date ($today) as your
+              reference point - assume the nearest real-world occurrence of that
+              month/day, not necessarily the current calendar year.
+            - time: the event's time as 24-hour HH:MM, only if a time is actually
+              written down for it. Omit this field entirely if no time is shown.
+            - description: any other short notes visible for the event. Omit this
+              field if there's nothing beyond the title.
+            Skip anything illegible or too ambiguous to date confidently rather than
+            guessing. If the photo has no calendar or no dated entries at all, return
+            an empty list.
+        """.trimIndent()
+
+        val response = httpClient.post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent") {
+            parameter("key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(
+                GenerateContentRequest(
+                    contents = listOf(
+                        GeminiContent(
+                            listOf(
+                                GeminiPart(text = prompt),
+                                GeminiPart(inlineData = GeminiInlineData(mimeType, Base64.getEncoder().encodeToString(imageBytes)))
+                            )
+                        )
+                    ),
+                    generationConfig = GeminiGenerationConfig(responseSchema = calendarEventsExtractionSchema)
+                )
+            )
+        }.body<GenerateContentResponse>()
+
+        val text = response.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: return emptyList()
+        val payload = Json { ignoreUnknownKeys = true }.decodeFromString<CalendarEventsExtractionPayload>(stripJsonFence(text))
+        return payload.events.map { ExtractedCalendarEvent(it.title, it.date, it.time, it.description) }
     }
 
     // Gemini sometimes wraps its JSON response in a markdown code fence even

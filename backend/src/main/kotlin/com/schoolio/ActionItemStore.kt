@@ -3,18 +3,25 @@ package com.schoolio
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 
-// A single actionable to-do extracted from a message, or pulled directly
-// from a calendar event - a first-class entity (its own top-level
-// collection) rather than nested inside the message doc, so it can later
-// grow its own lifecycle (done/dismissed/pushed-to-calendar) without
-// rewriting the whole message every time that changes. Exactly one of
-// sourceMessageId/sourceCalendarEventId is set, matching which pipeline
-// produced this item (see InboxProcessingSweep.kt vs InboxRoutes.kt's
-// pullAndStoreCalendarEvents) - both are provenance/debugging links, not
+// A single actionable to-do extracted from a message, pulled directly from a
+// calendar event, or transcribed from a photo of a calendar - a first-class
+// entity (its own top-level collection) rather than nested inside the
+// message doc, so it can later grow its own lifecycle
+// (done/dismissed/pushed-to-calendar) without rewriting the whole message
+// every time that changes. At most one of sourceMessageId/
+// sourceCalendarEventId is set, matching which pipeline produced this item
+// (see InboxProcessingSweep.kt vs InboxRoutes.kt's pullAndStoreCalendarEvents
+// vs the photo-import routes) - both are provenance/debugging links, not
 // part of the main app flow, which just renders items inline (see
 // inbox.ftl). A calendar-derived item has no source message, so
 // buildDateGroups/buildFlatActionItemViews (InboxRoutes.kt) treat a null
 // sourceMessageId the same as an unmatched one: blank subject/from/summary.
+// sourcePhotoImport marks the third case (neither field set) so those
+// builders can still tell it apart from a calendar-derived item when
+// choosing what "From ..." text to show - a plain random-id insert
+// (ActionItemRepository.addAll), same as the email path, since a one-off
+// photo import has no stable id to upsert against the way a recurring
+// calendar pull does.
 // date is a single combined ISO-8601 field (YYYY-MM-DD, or YYYY-MM-DD'T'HH:MM
 // when a time is known) - InboxRoutes combines ExtractedActionItem's
 // separate dueDate/dueTime (email path) or CalendarEvent.start (calendar
@@ -29,6 +36,7 @@ data class ActionItem(
     val id: String = java.util.UUID.randomUUID().toString(),
     val sourceMessageId: String? = null,
     val sourceCalendarEventId: String? = null,
+    val sourcePhotoImport: Boolean = false,
     val title: String,
     val description: String,
     val date: String? = null,
@@ -109,6 +117,7 @@ class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRep
         id = id,
         sourceMessageId = getString("sourceMessageId"),
         sourceCalendarEventId = getString("sourceCalendarEventId"),
+        sourcePhotoImport = getBoolean("sourcePhotoImport") ?: false,
         title = getString("title") ?: "",
         description = getString("description") ?: "",
         date = getString("date"),
@@ -118,6 +127,7 @@ class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRep
     private fun itemToMap(item: ActionItem): Map<String, Any?> = mapOf(
         "sourceMessageId" to item.sourceMessageId,
         "sourceCalendarEventId" to item.sourceCalendarEventId,
+        "sourcePhotoImport" to item.sourcePhotoImport,
         "title" to item.title,
         "description" to item.description,
         "date" to item.date,

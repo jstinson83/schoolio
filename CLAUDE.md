@@ -220,3 +220,26 @@ hit the same way.
   repopulate the cache. Editing a cached file's contents without bumping it
   leaves every browser that already installed the service worker serving
   the stale cached version indefinitely.
+- **Ktor 2.3.9's `PartData.FileItem.provider()` returns `io.ktor.utils.io.core.Input`,
+  not a `ByteReadChannel`** - the calendar-photo-import upload
+  (`POST /inbox/import-photo`, `InboxRoutes.kt`) needed the raw bytes of the
+  uploaded file, and `part.provider().readBytes()` (the `readBytes()`
+  extension lives in `io.ktor.utils.io.core`, so `import
+  io.ktor.utils.io.core.*`) is the correct one-liner - the older Jakarta
+  Mail-era `streamProvider()`/`InputStream` idiom doesn't exist on this
+  type, and `ByteReadChannel`-shaped calls like `.readRemaining(limit)`
+  don't resolve either (that's a real member on `ByteReadChannel`, but
+  `FileItem.provider()`'s declared return type is `Input`, not that
+  interface) - confirmed by decompiling `ktor-http-jvm`'s actual class
+  file rather than guessing from a version mismatch between Ktor's 1.x and
+  2.x multipart APIs.
+- **FreeMarker's `HTMLOutputFormat` autoescapes a plain apostrophe in
+  interpolated text to an HTML entity** (`&#39;` at the time of writing) -
+  a test asserting on rendered page text via a literal string like
+  `"Couldn't read that photo"` (`ImportPhotoTest.kt`) will find the
+  apostrophe missing from the raw HTML even though it renders correctly in
+  a browser. Assert on a substring that doesn't straddle an apostrophe
+  instead of the exact user-facing wording, or decode the entity first -
+  this isn't a bug in the app, just a mismatch between "what a browser
+  shows" and "what's literally in the HTML text" that a naive `contains()`
+  check doesn't account for.

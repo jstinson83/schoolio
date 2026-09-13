@@ -184,13 +184,30 @@ class FakeGeminiClient(
     private val extraction: EmailExtraction = EmailExtraction(
         summary = "Fake summary",
         actionItems = listOf(ExtractedActionItem(title = "Sign and return the form", description = "Sign and return the form", dueDate = "2026-09-19"))
+    ),
+    // Same "fixed canned result, not a real vision model" reasoning as
+    // extraction above - the photo-import route's own logic (review page
+    // rendering, confirm creating ActionItems) is what InboxTest exercises,
+    // not Gemini's actual image reading (see GeminiClientTest for that).
+    private val photoEvents: List<ExtractedCalendarEvent> = listOf(
+        ExtractedCalendarEvent(title = "Picture day", date = "2026-09-25")
     )
 ) : GeminiClient {
     val extractedSubjects = mutableListOf<String>()
+    var lastImageBytesSize: Int? = null
+        private set
+    var lastImageMimeType: String? = null
+        private set
 
     override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
         extractedSubjects.add(subject)
         return extraction
+    }
+
+    override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> {
+        lastImageBytesSize = imageBytes.size
+        lastImageMimeType = mimeType
+        return photoEvents
     }
 }
 

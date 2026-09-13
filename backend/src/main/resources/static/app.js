@@ -82,3 +82,131 @@ if ('serviceWorker' in navigator) {
     }
   }, 3000);
 })();
+
+// Photo-import page (import-photo.ftl) - the FAB opens the camera/file
+// picker, and each photo's POST /inbox/import-photo/extract response is
+// appended into #eventsList in place, so several photos build up one
+// review batch before the confirm form at the bottom is ever submitted
+// (see InboxRoutes.kt's doc comment on that route for why it's fetch()-driven
+// instead of a plain form post). #confirmForm's own submit is a normal
+// full-page POST, same as every other form in this app - only the
+// per-photo extraction step needs JS at all.
+(function () {
+  const fabButton = document.getElementById('fabButton');
+  if (!fabButton) return;
+
+  const photoInput = document.getElementById('photoInput');
+  const stagingCard = document.getElementById('stagingCard');
+  const stagingName = document.getElementById('stagingName');
+  const stagingStatus = document.getElementById('stagingStatus');
+  const stagingCancel = document.getElementById('stagingCancel');
+  const extractBtn = document.getElementById('extractBtn');
+  const importError = document.getElementById('importError');
+  const emptyState = document.getElementById('emptyState');
+  const eventsList = document.getElementById('eventsList');
+  const eventCount = document.getElementById('eventCount');
+  const confirmBar = document.getElementById('confirmBar');
+
+  // Bumped for every row ever added this page visit, never reused - even
+  // across several photos - so each row's form field names (title_0,
+  // title_1, ...) stay unique for #confirmForm's eventual submit.
+  let nextIndex = 0;
+
+  function updateChrome() {
+    const hasEvents = eventsList.children.length > 0;
+    emptyState.hidden = hasEvents;
+    confirmBar.hidden = !hasEvents;
+    eventCount.value = String(nextIndex);
+  }
+
+  // The row's skeleton is a fixed template (index is a number we generate
+  // ourselves, never user data) - each field's actual value is set via the
+  // .value property afterward instead of interpolated into the HTML string,
+  // so an extracted title/notes containing a quote or angle bracket (a
+  // plausible OCR read of arbitrary handwriting) can't break out of an
+  // attribute or inject markup the way string-building the whole tag would.
+  function addEventRow(event) {
+    const index = nextIndex++;
+    const li = document.createElement('li');
+    li.className = 'action-item photo-review-item just-added';
+    li.innerHTML = `
+      <label class="photo-review-include">
+        <input type="checkbox" name="include_${index}" checked>
+        Add this event
+      </label>
+      <label>Title
+        <input type="text" name="title_${index}" required>
+      </label>
+      <div class="photo-review-date-time">
+        <label>Date
+          <input type="date" name="date_${index}">
+        </label>
+        <label>Time (optional)
+          <input type="time" name="time_${index}">
+        </label>
+      </div>
+      <label>Notes (optional)
+        <input type="text" name="description_${index}">
+      </label>
+    `;
+    li.querySelector(`input[name="title_${index}"]`).value = event.title;
+    li.querySelector(`input[name="date_${index}"]`).value = event.date;
+    li.querySelector(`input[name="time_${index}"]`).value = event.time || '';
+    li.querySelector(`input[name="description_${index}"]`).value = event.description || '';
+    eventsList.appendChild(li);
+    li.addEventListener('animationend', () => li.classList.remove('just-added'), { once: true });
+  }
+
+  function showError(message) {
+    importError.textContent = message;
+    importError.hidden = false;
+  }
+
+  fabButton.addEventListener('click', () => photoInput.click());
+
+  photoInput.addEventListener('change', () => {
+    const file = photoInput.files && photoInput.files[0];
+    if (!file) return;
+    importError.hidden = true;
+    stagingName.textContent = file.name || 'calendar-photo.jpg';
+    stagingStatus.textContent = 'Ready to extract';
+    extractBtn.disabled = false;
+    extractBtn.textContent = 'Extract events';
+    stagingCard.hidden = false;
+    stagingCard.scrollIntoView({ block: 'nearest' });
+  });
+
+  stagingCancel.addEventListener('click', () => {
+    photoInput.value = '';
+    stagingCard.hidden = true;
+  });
+
+  extractBtn.addEventListener('click', async () => {
+    const file = photoInput.files && photoInput.files[0];
+    if (!file) return;
+    extractBtn.disabled = true;
+    extractBtn.textContent = 'Extracting…';
+    stagingStatus.textContent = 'Reading the photo…';
+    importError.hidden = true;
+
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+      const res = await fetch('/inbox/import-photo/extract', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.error) {
+        showError(data.error);
+      } else {
+        data.events.forEach(addEventRow);
+        updateChrome();
+      }
+    } catch (e) {
+      showError("Couldn't reach the server - check your connection and try again.");
+    } finally {
+      stagingCard.hidden = true;
+      photoInput.value = '';
+    }
+  });
+
+  updateChrome();
+})();
