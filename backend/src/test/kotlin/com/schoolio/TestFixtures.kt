@@ -41,10 +41,6 @@ class FakeUserRepository : UserRepository {
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
         usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
-
-    override suspend fun saveCalendarAppPassword(id: String, appPassword: String) {
-        usersById[id]?.let { usersById[id] = it.copy(calendarAppPassword = appPassword) }
-    }
 }
 
 class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {
@@ -74,9 +70,7 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
 }
 
 class FakeCalendarClient(private val events: List<CalendarEvent> = emptyList()) : CalendarClient {
-    var lastEmailUsed: String? = null
-        private set
-    var lastAppPasswordUsed: String? = null
+    var lastCalendarIdUsed: String? = null
         private set
     var lastFromUsed: Instant? = null
         private set
@@ -87,9 +81,8 @@ class FakeCalendarClient(private val events: List<CalendarEvent> = emptyList()) 
     var fetchCallCount = 0
         private set
 
-    override suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent> {
-        lastEmailUsed = email
-        lastAppPasswordUsed = appPassword
+    override suspend fun fetchEvents(calendarId: String, from: Instant, until: Instant): List<CalendarEvent> {
+        lastCalendarIdUsed = calendarId
         lastFromUsed = from
         lastUntilUsed = until
         fetchCallCount++
@@ -277,7 +270,13 @@ fun ApplicationTestBuilder.testModule(
     userStore: UserRepository = FakeUserRepository(),
     gmailClient: GmailClient = FakeGmailClient(),
     geminiClient: GeminiClient = FakeGeminiClient(),
-    calendarClient: CalendarClient = FakeCalendarClient(),
+    // Nullable like the real module()'s default - null means Calendar isn't
+    // configured on this deployment (see InboxRoutes.kt's scheduleSync).
+    // Non-null by default here so most tests exercise the calendar pull path
+    // too (with zero events, a no-op); pass null explicitly to test the
+    // "not configured at all" case.
+    calendarClient: CalendarClient? = FakeCalendarClient(),
+    calendarServiceAccountEmail: String? = "schoolio-calendar@test-project.iam.gserviceaccount.com",
     oauthClient: HttpClient = fakeGoogleOAuthClient(),
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
@@ -307,6 +306,7 @@ fun ApplicationTestBuilder.testModule(
             gmailClient = gmailClient,
             geminiClient = geminiClient,
             calendarClient = calendarClient,
+            calendarServiceAccountEmail = calendarServiceAccountEmail,
             oauthClient = oauthClient,
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
@@ -352,19 +352,5 @@ suspend fun ApplicationTestBuilder.signInFakeUserWithGmailConnected(
 ): HttpClient {
     val client = signInFakeUser()
     userStore.saveGmailAppPassword(sub, appPassword)
-    return client
-}
-
-// Same as signInFakeUserWithGmailConnected, plus a Calendar app password -
-// GET /inbox still gates on Gmail alone (see InboxRoutes.kt), so a calendar
-// pull test needs both connected to reach the page at all.
-suspend fun ApplicationTestBuilder.signInFakeUserWithGmailAndCalendarConnected(
-    userStore: UserRepository,
-    gmailAppPassword: String = "fake-app-password",
-    calendarAppPassword: String = "fake-calendar-app-password",
-    sub: String = TEST_SUB
-): HttpClient {
-    val client = signInFakeUserWithGmailConnected(userStore, gmailAppPassword, sub)
-    userStore.saveCalendarAppPassword(sub, calendarAppPassword)
     return client
 }

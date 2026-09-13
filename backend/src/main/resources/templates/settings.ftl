@@ -32,16 +32,16 @@
 
         <section class="settings-section">
             <h2>Calendar connection</h2>
-            <form method="post" action="/inbox/connect-calendar" class="settings-form">
-                <label>
-                    Calendar app password
-                    <input type="password" name="appPassword" placeholder="<#if hasCalendarAppPassword>already connected - enter a new one to replace it<#else>paste your app password here</#if>" autocomplete="off">
-                </label>
-                <p class="field-hint">Generate a separate one at
-                    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
-                    (requires 2-Step Verification) - use a different app password than the one above, so Gmail and Calendar access can be rotated independently.</p>
-                <button type="submit" class="btn btn-primary">Save</button>
-            </form>
+            <#if calendarServiceAccountEmail?has_content>
+                <p>Share your Google Calendar with
+                    <strong>${calendarServiceAccountEmail}</strong>
+                    (Calendar &rarr; Settings and sharing &rarr; Share with specific people &rarr; add that address with
+                    "See all event details") to see your upcoming events here - no password to enter, and nothing to
+                    submit on this page. It can take a few minutes after sharing before events show up on
+                    <a href="/inbox">the inbox</a>.</p>
+            <#else>
+                <p>Calendar access isn't configured on this deployment yet.</p>
+            </#if>
         </section>
 
         <section class="settings-section">

@@ -1,143 +1,152 @@
 package com.schoolio
 
+import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.time.Instant
-import java.time.LocalDateTime
+import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
-import java.util.Base64
 
-// What callers will eventually need from a pulled calendar event - same
-// "trimmed to what we use" shape as GmailMessage in GmailClient.kt. end is
-// nullable since a bare VEVENT technically only requires DTSTART.
-data class CalendarEvent(val uid: String, val summary: String, val description: String?, val start: Instant, val end: Instant?)
+// What callers need from a pulled calendar event - same "trimmed to what we
+// use" shape as GmailMessage in GmailClient.kt. allDay distinguishes a
+// dateless event (Google Calendar API's "date" field, e.g. "No School -
+// Teacher PD Day") from a timed one (its "dateTime" field) - InboxRoutes.kt's
+// pullAndStoreCalendarEvents needs this to decide whether ActionItem.date
+// gets a time component, rather than fabricating a fake midnight time for an
+// event that never had one. end is nullable since a bare event technically
+// only requires a start.
+data class CalendarEvent(val uid: String, val summary: String, val description: String?, val start: Instant, val allDay: Boolean, val end: Instant?)
 
 interface CalendarClient {
-    // email/appPassword are per-user (User.email/User.calendarAppPassword,
-    // see UserStore.kt's doc comment on why it's a separate field from
-    // gmailAppPassword) - same "caller supplies credentials, this interface
-    // doesn't touch UserRepository" split as GmailClient. [from, until] is a
-    // bounded window, not an open-ended "since" the way GmailClient's lookback
-    // is - unlike email (where what matters is catching up on everything back
-    // to some point), what's useful here is what's coming up, and an unbounded
-    // upper bound risks the server trying to return recurring-event instances
-    // indefinitely. The caller (InboxRoutes.kt) currently always passes
-    // [now, now + lookahead], recomputed fresh on every pull - see its own
-    // doc comment on why no watermark is needed here the way there is for
-    // email.
-    suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent>
+    // calendarId is the Google Calendar id to read - a personal account's
+    // primary calendar id is its own email address. No per-user credential
+    // here (unlike GmailClient's email/appPassword) - see
+    // GoogleCalendarApiClient's doc comment on why this is a single shared
+    // service-account credential instead. [from, until] is a bounded window,
+    // not an open-ended "since" the way GmailClient's lookback is - unlike
+    // email (catching up on the past), what's useful for calendar is what's
+    // coming up, and an unbounded upper bound risks the API trying to expand
+    // recurring events indefinitely. The caller (InboxRoutes.kt) always
+    // passes [now, now + lookahead], recomputed fresh on every pull - see its
+    // own doc comment on why no watermark is needed here the way there is
+    // for email.
+    suspend fun fetchEvents(calendarId: String, from: Instant, until: Instant): List<CalendarEvent>
 }
 
-// The CalDAV request shape below (REPORT/calendar-query, Basic Auth with a
-// Google app password, same app-password mechanism IMAP already uses - see
-// context.md's Gmail integration notes for why that sidesteps OAuth
-// entirely) is real, but the multistatus/iCalendar response parsing has only
-// been checked against the fabricated response in CalDavCalendarClientTest,
-// not a live Google account. Known gaps, same "documented, not silently
-// wrong" spirit as this codebase's other known-incomplete corners (see
-// CLAUDE.md): recurring events (RRULE) aren't expanded into individual
-// occurrences, all-day events (DTSTART;VALUE=DATE:yyyyMMdd, no time
-// component) aren't parsed, and a TZID-qualified local DTSTART/DTEND (rather
-// than a bare UTC ...Z timestamp) isn't parsed either - all three should be
-// verified against a real response before this is trusted for anything
-// beyond the plain-UTC-timed-event case.
-class CalDavCalendarClient(
+// Real Google Calendar API v3 access via a single shared service account,
+// not per-user OAuth or an app password. This replaces an earlier attempt at
+// CalDAV + a per-user Google app password (the same mechanism that works for
+// Gmail IMAP) - verified against a live account to fail with a flat 401,
+// Google's CalDAV endpoint doesn't accept Basic Auth/app passwords the way
+// IMAP does. A service account sidesteps the OAuth-consent-screen questions
+// entirely (no "sensitive scope" verification, no Testing-status refresh
+// token churn - those rules are about consumer "Sign in with Google" flows,
+// which this isn't): each household member individually shares their
+// personal calendar with the service account's own email address (Google
+// Calendar's normal per-person sharing, no Workspace/domain requirement),
+// and this one credential can then read any calendar that's been shared with
+// it. credentials must already be scoped to
+// https://www.googleapis.com/auth/calendar.readonly (see Application.kt's
+// wiring) - this class only mints/refreshes the access token, the actual API
+// call is a plain REST request over the existing Ktor HttpClient, same "no
+// heavy SDK for a third-party API" convention as GeminiClient/GmailClient.
+// A calendarId that hasn't shared its calendar with the service account
+// yet - the expected state before that one-time setup step - comes back as a
+// 403/404 from Google, which fetchEvents surfaces as a thrown exception (see
+// below) rather than silently returning no events, same reasoning as the
+// CalDAV attempt's own status-check fix.
+class GoogleCalendarApiClient(
     private val httpClient: HttpClient,
-    private val baseUrl: String = "https://apidata.googleusercontent.com/caldav/v2"
+    private val credentials: GoogleCredentials
 ) : CalendarClient {
-    override suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent> =
+    override suspend fun fetchEvents(calendarId: String, from: Instant, until: Instant): List<CalendarEvent> =
         withContext(Dispatchers.IO) {
-            val response = httpClient.request("$baseUrl/$email/events") {
-                method = HttpMethod("REPORT")
-                header(HttpHeaders.Authorization, basicAuthHeader(email, appPassword))
-                header("Depth", "1")
-                contentType(ContentType.Application.Xml)
-                setBody(calendarQueryBody(from, until))
+            credentials.refreshIfExpired()
+            val accessToken = credentials.accessToken.tokenValue
+            val response = httpClient.get("https://www.googleapis.com/calendar/v3/calendars/${calendarId.encodeURLParameter()}/events") {
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("timeMin", from.toString())
+                parameter("timeMax", until.toString())
+                // Expands recurring events into individual occurrences within
+                // the window (each with its own start/end) rather than
+                // returning one record per recurring series - what a
+                // household actually wants to see is "which specific
+                // Tuesdays this fits in the lookahead window," not one entry
+                // for an indefinitely-repeating series.
+                parameter("singleEvents", "true")
+                parameter("orderBy", "startTime")
             }
             val body = response.bodyAsText()
-            // A non-2xx response (401 - basic auth/app password rejected, 404
-            // - wrong calendar id/URL, etc.) still has a body, and
-            // parseEvents would just find no <calendar-data> tags in it and
-            // silently return an empty list - indistinguishable from "no
-            // upcoming events" at every call site above this. Fail loudly
-            // instead so a real problem shows up in scheduleSync's caught
-            // exception (see InboxRoutes.kt) rather than looking like an
-            // empty calendar.
+            // Same "don't silently parse a rejection as an empty result"
+            // fix already made once for the CalDAV attempt - a calendar not
+            // yet shared with the service account 403s/404s here, and that
+            // needs to be visible (see scheduleSync's catch block in
+            // InboxRoutes.kt), not indistinguishable from "no upcoming
+            // events."
             if (!response.status.isSuccess()) {
-                error("CalDAV request to $baseUrl failed: ${response.status} - ${body.take(500)}")
+                error("Calendar API request for $calendarId failed: ${response.status} - ${body.take(500)}")
             }
             parseEvents(body)
         }
 
-    private fun basicAuthHeader(email: String, appPassword: String): String =
-        "Basic " + Base64.getEncoder().encodeToString("$email:$appPassword".toByteArray(Charsets.UTF_8))
-
-    // RFC 4791 calendar-query REPORT, filtered to VEVENTs in [from, until] -
-    // server-side filtering, same "never pull everything and filter locally"
-    // principle GmailClient's IMAP SEARCH already follows.
-    private fun calendarQueryBody(from: Instant, until: Instant): String {
-        val start = icsUtcFormatter.format(from)
-        val end = icsUtcFormatter.format(until)
-        return """
-            <?xml version="1.0" encoding="utf-8" ?>
-            <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-              <D:prop>
-                <C:calendar-data/>
-              </D:prop>
-              <C:filter>
-                <C:comp-filter name="VCALENDAR">
-                  <C:comp-filter name="VEVENT">
-                    <C:time-range start="$start" end="$end"/>
-                  </C:comp-filter>
-                </C:comp-filter>
-              </C:filter>
-            </C:calendar-query>
-        """.trimIndent()
-    }
-
-    // Crude regex-based extraction rather than a full WebDAV XML parser (no
-    // such dependency in this project yet) - same "hand-rolled, not a full
-    // parser library" call as GmailClient.kt's HTML tag-strip fallback. Pulls
-    // each <calendar-data> block's raw iCalendar text out of the multistatus
-    // response, then parses each one as a single VEVENT directly.
-    private fun parseEvents(xml: String): List<CalendarEvent> =
-        calendarDataTagRegex.findAll(xml)
-            .mapNotNull { parseVEvent(unescapeXml(it.groupValues[1])) }
-            .toList()
-
-    private fun unescapeXml(raw: String): String = raw
-        .replace("&lt;", "<").replace("&gt;", ">")
-        .replace("&quot;", "\"").replace("&apos;", "'")
-        .replace("&amp;", "&")
-
-    private fun parseVEvent(ics: String): CalendarEvent? {
-        val lines = ics.lines().map { it.trim() }
-        fun field(name: String): String? = lines
-            .firstOrNull { it.startsWith("$name:") || it.startsWith("$name;") }
-            ?.substringAfter(":")
-        val uid = field("UID") ?: return null
-        val start = field("DTSTART")?.let { parseIcsUtcDateTime(it) } ?: return null
-        return CalendarEvent(
-            uid = uid,
-            summary = field("SUMMARY") ?: "(no title)",
-            description = field("DESCRIPTION"),
-            start = start,
-            end = field("DTEND")?.let { parseIcsUtcDateTime(it) }
-        )
-    }
-
-    // Only handles the plain UTC "yyyyMMdd'T'HHmmss'Z'" form - see this
-    // class's doc comment for the date shapes this doesn't handle yet.
-    private fun parseIcsUtcDateTime(raw: String): Instant? =
-        runCatching { LocalDateTime.parse(raw, icsUtcFormatter).toInstant(ZoneOffset.UTC) }.getOrNull()
+    private fun parseEvents(json: String): List<CalendarEvent> =
+        jsonParser.decodeFromString<EventsListResponse>(json).items.mapNotNull { it.toCalendarEvent() }
 
     private companion object {
-        val icsUtcFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)
-        val calendarDataTagRegex = Regex("<(?:[A-Za-z0-9]+:)?calendar-data[^>]*>([\\s\\S]*?)</(?:[A-Za-z0-9]+:)?calendar-data>")
+        val jsonParser = Json { ignoreUnknownKeys = true }
+    }
+}
+
+@Serializable
+private data class EventsListResponse(val items: List<CalendarApiEvent> = emptyList())
+
+@Serializable
+private data class CalendarApiEvent(
+    val id: String,
+    val summary: String? = null,
+    val description: String? = null,
+    val status: String? = null,
+    val start: EventDateTime? = null,
+    val end: EventDateTime? = null
+) {
+    // A cancelled instance of a recurring event still shows up in the
+    // singleEvents=true expansion (see GoogleCalendarApiClient.fetchEvents) -
+    // it needs its own entry to invalidate a previously-pulled occurrence of
+    // that series, but for now (no update/cancel handling yet - see
+    // context.md's reconciliation note) it's simplest to just never turn one
+    // into an ActionItem in the first place.
+    fun toCalendarEvent(): CalendarEvent? {
+        if (status == "cancelled") return null
+        val startDateTime = start ?: return null
+        val instant = startDateTime.toInstant() ?: return null
+        return CalendarEvent(
+            uid = id,
+            summary = summary ?: "(no title)",
+            description = description,
+            start = instant,
+            allDay = startDateTime.dateTime == null,
+            end = end?.toInstant()
+        )
+    }
+}
+
+// Google Calendar API's EventDateTime shape: a timed event sets dateTime (an
+// RFC3339 timestamp with an explicit offset, e.g. "2026-09-20T13:00:00-04:00"
+// - never a bare "Z"-only Instant, so this parses via OffsetDateTime, not
+// Instant.parse), an all-day event sets date instead (a bare "yyyy-MM-dd"
+// with no time or zone at all).
+@Serializable
+private data class EventDateTime(val dateTime: String? = null, val date: String? = null) {
+    fun toInstant(): Instant? = when {
+        dateTime != null -> runCatching { OffsetDateTime.parse(dateTime).toInstant() }.getOrNull()
+        date != null -> runCatching { LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant() }.getOrNull()
+        else -> null
     }
 }
