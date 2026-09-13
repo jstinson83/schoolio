@@ -41,6 +41,13 @@ const val DEFAULT_INBOX_PULL_DEBOUNCE_MS = 2_000L
 // seconds if the tab's left open.
 const val DEFAULT_INBOX_RESYNC_COOLDOWN_MS = 60_000L
 
+// How far into the future a calendar pull looks - the inverse of
+// ScanSettings.lookbackWeeks for email (see CalendarClient.kt's doc comment
+// on why a bounded lookahead, not an open-ended "since", is what calendar
+// needs). Hardcoded rather than a settings-form field for now - one fixed
+// value is enough until there's a reason to make it configurable.
+const val CALENDAR_LOOKAHEAD_DAYS = 7L
+
 // Wire shapes for GET /inbox/status - a plain mapOf(...) mixing Strings/Ints/
 // nested lists is a Map<String, Any>, which kotlinx.serialization can't
 // encode without a contextual serializer for Any (see CLAUDE.md's
@@ -85,10 +92,17 @@ data class InboxStatusResponse(
 // scheduleSync) and the page just shows a "checking for new mail" indicator
 // (see inbox.ftl/app.js) until it's done. schoolSenders/lookbackWeeks live in
 // Firestore (SettingsRepository), edited via the form on this page.
+// scheduleSync also pulls Calendar (if connected - see
+// User.calendarAppPassword) in the same background job: unlike email, a
+// calendar event needs no Gemini step (it already has a title/date), so
+// pullAndStoreCalendarEvents turns each one directly into an ActionItem -
+// see that function's own doc comment for the lookahead window and why no
+// watermark is needed here the way there is for email.
 fun Route.inboxRoutes(
     userStore: UserRepository,
     gmailClient: GmailClient,
     geminiClient: GeminiClient,
+    calendarClient: CalendarClient,
     settingsStore: SettingsRepository,
     messageStore: MessageRepository,
     actionItemStore: ActionItemRepository,
@@ -141,7 +155,12 @@ fun Route.inboxRoutes(
     // often a *new* one can even start, the same purpose lookbackWeeks'
     // watermark serves for how far back a pull searches, just for how often
     // one runs at all.
-    fun scheduleSync(userId: String, email: String, appPassword: String, settings: ScanSettings) {
+    // calendarAppPassword is optional (null means Calendar isn't connected -
+    // see settings.ftl's separate connect-calendar form) - unlike Gmail,
+    // which gates the whole page (see GET /inbox below), Calendar is
+    // additive: its pull just doesn't run until connected, same shared
+    // debounce/cooldown/job tracking as the Gmail pull either way.
+    fun scheduleSync(userId: String, email: String, appPassword: String, settings: ScanSettings, calendarAppPassword: String?) {
         if (isSyncing(userId)) return
         val lastSynced = lastSyncedAt[userId]
         if (lastSynced != null && Duration.between(lastSynced, Instant.now()) < Duration.ofMillis(resyncCooldownMs)) return
@@ -149,19 +168,28 @@ fun Route.inboxRoutes(
             try {
                 delay(pullDebounceMs)
                 pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore)
+                if (calendarAppPassword != null) {
+                    pullAndStoreCalendarEvents(email, calendarAppPassword, calendarClient, actionItemStore)
+                }
             } catch (e: Exception) {
-                // Best-effort - a transient IMAP failure shouldn't leave this
-                // user stuck "syncing" forever (see isSyncing above); the
-                // next eligible GET /inbox just retries. Never surfaced to
-                // the user today - no manual retry/error banner for a failed
-                // pull yet, same "not built here yet" gap as message
-                // processing's own FAILED state predates a manual retry.
+                // Best-effort - a transient IMAP/CalDAV failure shouldn't
+                // leave this user stuck "syncing" forever (see isSyncing
+                // above); the next eligible GET /inbox just retries. Never
+                // surfaced to the user today - no manual retry/error banner
+                // for a failed pull yet, same "not built here yet" gap as
+                // message processing's own FAILED state predates a manual
+                // retry. A calendar failure here means an email pull that
+                // already succeeded still gets processed below - the two
+                // pulls aren't rolled back together.
             } finally {
                 lastSyncedAt[userId] = Instant.now()
             }
-            // Runs whether the pull above succeeded or not, so a message left
-            // PENDING by an earlier successful pull still gets processed even
-            // if this particular pull attempt failed.
+            // Runs whether the pull(s) above succeeded or not, so a message
+            // left PENDING by an earlier successful pull still gets
+            // processed even if this particular pull attempt failed. Purely
+            // an email-side concern - calendar events need no Gemini step
+            // (see pullAndStoreCalendarEvents' doc comment), so this doesn't
+            // wait on or otherwise involve the calendar pull.
             scheduleProcessing()
         }
     }
@@ -182,7 +210,7 @@ fun Route.inboxRoutes(
             return@get
         }
 
-        scheduleSync(userId, user.email, appPassword, settings)
+        scheduleSync(userId, user.email, appPassword, settings, user.calendarAppPassword)
 
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
@@ -275,6 +303,7 @@ fun Route.inboxRoutes(
                     "sendersText" to settings.schoolSenders.joinToString(", "),
                     "lookbackWeeks" to settings.lookbackWeeks,
                     "hasAppPassword" to (user?.gmailAppPassword != null),
+                    "hasCalendarAppPassword" to (user?.calendarAppPassword != null),
                     "activeNav" to "settings"
                 ) + call.currentUserModel()
             )
@@ -322,6 +351,20 @@ fun Route.inboxRoutes(
             userStore.saveGmailAppPassword(userId, appPassword)
         }
         call.respondRedirect("/inbox")
+    }
+
+    // Same shape as /inbox/connect-gmail above, for the separate Calendar app
+    // password (User.calendarAppPassword) - once saved, the very next GET
+    // /inbox (redirected here to /inbox/settings, not /inbox, so submitting
+    // this form doesn't itself trigger the pull) picks it up via
+    // scheduleSync.
+    post("/inbox/connect-calendar") {
+        val userId = call.requireUserId()
+        val appPassword = call.receiveParameters()["appPassword"]?.trim()
+        if (!appPassword.isNullOrEmpty()) {
+            userStore.saveCalendarAppPassword(userId, appPassword)
+        }
+        call.respondRedirect("/inbox/settings")
     }
 
     post("/inbox/settings") {
@@ -377,6 +420,43 @@ private suspend fun pullAndStoreNewMessages(
     }
 }
 
+// Fixed [now, now + CALENDAR_LOOKAHEAD_DAYS] window, recomputed fresh on
+// every call - no watermark the way pullAndStoreNewMessages has one. A
+// watermark exists for email to keep an otherwise-unboundedly-large search
+// narrow (see that function's doc comment); the calendar window is already
+// small and doesn't grow, so there's no accumulating history to avoid
+// re-scanning. Dedup instead comes from ActionItemRepository.storeIfAbsent,
+// keyed on the calendar event's own uid, same "safe to re-fetch, no-ops on
+// what's already stored" shape as MessageRepository.storeIfAbsent. No Gemini
+// step for these - a calendar event already carries a title/date natively,
+// unlike an EmailMessage's free-text body that needs the LLM to find one.
+// (Not yet handled: an already-stored event whose time/title changes on the
+// calendar after this first pulled it - storeIfAbsent only guards against
+// duplicate inserts, not updates - see context.md's reconciliation note.)
+private suspend fun pullAndStoreCalendarEvents(
+    email: String,
+    appPassword: String,
+    calendarClient: CalendarClient,
+    actionItemStore: ActionItemRepository
+) {
+    val now = Instant.now()
+    val until = now.plus(Duration.ofDays(CALENDAR_LOOKAHEAD_DAYS))
+    val events = calendarClient.fetchEvents(email, appPassword, now, until)
+    for (event in events) {
+        actionItemStore.storeIfAbsent(
+            ActionItem(
+                id = "calendar-${event.uid}",
+                sourceCalendarEventId = event.uid,
+                title = event.summary,
+                description = event.description ?: "",
+                date = calendarEventDateFormatter.format(event.start)
+            )
+        )
+    }
+}
+
+private val calendarEventDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm").withZone(ZoneOffset.UTC)
+
 private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
 
 // ActionItem.date is already YYYY-MM-DD (optionally with a 'T'HH:MM suffix -
@@ -423,7 +503,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
-        val message = messagesById[item.sourceMessageId]
+        val message = item.sourceMessageId?.let { messagesById[it] }
         val (dateKey, time) = item.dateKeyAndTime(message)
         Dated(dateKey, time, item, message)
     }
@@ -455,7 +535,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
 // closest to becoming worth dismissing sit at the top.
 private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> =
     actionItems.sortedByDescending { it.date }.map { item ->
-        val message = messagesById[item.sourceMessageId]
+        val message = item.sourceMessageId?.let { messagesById[it] }
         mapOf(
             "id" to item.id,
             "title" to item.title,

@@ -186,8 +186,79 @@ doesn't have an equivalent need here yet; see `foodie`'s CLAUDE.md
 "Service worker caching (PWA)" section for that pattern if offline inbox
 viewing ever becomes a goal.
 
+## Calendar pull (decided, live)
+
+Pulls from Google Calendar as a second input source alongside Gmail, via
+**CalDAV + a separate Google app password**, not the Calendar REST API/
+OAuth — same reasoning as the Gmail IMAP decision above (avoids OAuth scope/
+verification complexity; app passwords aren't scoped per-protocol, so the
+same mechanism that unlocked IMAP access also unlocks CalDAV). Kept as a
+distinct field/credential from Gmail's rather than reusing it, so either can
+be rotated/revoked independently — see `User.calendarAppPassword`
+(`UserStore.kt`) and its own `/inbox/connect-calendar` form on the settings
+page (`settings.ftl`, `GET`/`POST /inbox/settings`), same shape as the
+existing Gmail connect form.
+
+`CalendarClient.kt` (`CalDavCalendarClient`) does real CalDAV
+REPORT/calendar-query request construction and Basic Auth (tested against a
+fabricated response in `CalDavCalendarClientTest` via MockEngine, not a live
+Google account yet) plus a hand-rolled iCalendar VEVENT parser. Known
+parsing gaps documented on the class itself: no RRULE/recurring-event
+expansion, no all-day (`VALUE=DATE`) events, no TZID-qualified local times —
+only the plain UTC-timestamped case is handled.
+
+**Wired into `InboxRoutes.kt`'s existing background-pull infra**
+(`scheduleSync`) rather than a separate pipeline: when a user's
+`calendarAppPassword` is set, the same debounced per-user job that pulls
+Gmail also calls `pullAndStoreCalendarEvents` right after. A calendar event
+carries structured fields (title, start/end) natively, so it **skips Gemini
+extraction** entirely (unlike an `EmailMessage`, which needs the LLM step to
+find a date/title in free text) and turns directly into an `ActionItem` via
+`ActionItem.sourceCalendarEventId` — a calendar-derived item has
+`sourceMessageId = null` (that field is nullable now), and inbox.ftl shows
+"From your calendar" instead of the usual `From "<subject>"` line when
+there's no source message. Calendar access is additive, unlike Gmail's hard
+gate on `GET /inbox`: no Calendar app password just means the pull is
+skipped, not that the page won't load.
+
+**Lookahead, not lookback**: unlike email (where what matters is catching up
+on the past), what's useful for calendar is what's coming up. Each pull
+fetches `[now, now + CALENDAR_LOOKAHEAD_DAYS]` (currently a hardcoded 7 days,
+no settings-form field yet) — recomputed fresh every sync, not built from a
+per-sender watermark the way email's lookback is. **No watermark for
+calendar, deliberately**: a watermark's job for email is keeping an
+otherwise-unbounded mailbox search narrow across repeated scans; the
+calendar window is already small and doesn't grow, so there's nothing to
+avoid re-scanning. Dedup instead comes from
+`ActionItemRepository.storeIfAbsent` (new method, alongside the existing
+`addAll` the Gemini path still uses), keyed on the calendar event's own
+`uid` — same "safe to re-fetch, no-op on what's already stored" shape as
+`MessageRepository.storeIfAbsent`.
+
+**Known gap, not solved here**: `storeIfAbsent` only guards against
+duplicate *inserts* on a re-pull — it does nothing if an already-stored
+calendar event's time/title/etc. later changes upstream (rescheduled,
+renamed, cancelled). See the reconciliation entry below.
+
 ## Not yet decided / open questions
 
+- **Cross-source reconciliation (update vs. duplicate)**: realized this is
+  one general problem wearing three costumes, not three separate features:
+  (1) two emails describing the same event should update one action item,
+  not create two — already broken today, `ActionItemStore.addAll` always
+  inserts with a fresh random id, no matching against existing items at
+  all; (2) a calendar event that's edited after being pulled (rescheduled,
+  renamed, cancelled) won't be reflected — `storeIfAbsent`'s id-based dedup
+  only stops duplicate inserts, not updates; (3) an email and a calendar
+  event describing the same real-world thing should be one entry, not two
+  (the original ask that surfaced this). All three need the same
+  underlying capability: given a new extracted/fetched record, decide
+  whether it matches something already stored and update-in-place instead
+  of inserting. The hard part is the matching itself — email/calendar don't
+  share stable ids the way re-pulling the same message does, so it likely
+  needs fuzzy matching (date + title/description overlap), maybe via
+  Gemini's judgment rather than string equality. Explicitly parked as one
+  shared design task, not to be solved piecemeal per source-pair.
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation

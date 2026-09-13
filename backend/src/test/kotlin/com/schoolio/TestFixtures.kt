@@ -41,6 +41,10 @@ class FakeUserRepository : UserRepository {
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
         usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
+
+    override suspend fun saveCalendarAppPassword(id: String, appPassword: String) {
+        usersById[id]?.let { usersById[id] = it.copy(calendarAppPassword = appPassword) }
+    }
 }
 
 class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {
@@ -66,6 +70,30 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
         lastSinceUsed = since
         searchCallCount++
         return messages
+    }
+}
+
+class FakeCalendarClient(private val events: List<CalendarEvent> = emptyList()) : CalendarClient {
+    var lastEmailUsed: String? = null
+        private set
+    var lastAppPasswordUsed: String? = null
+        private set
+    var lastFromUsed: Instant? = null
+        private set
+    var lastUntilUsed: Instant? = null
+        private set
+    // Same "prove a second real pull actually happened" purpose as
+    // FakeGmailClient.searchCallCount above.
+    var fetchCallCount = 0
+        private set
+
+    override suspend fun fetchEvents(email: String, appPassword: String, from: Instant, until: Instant): List<CalendarEvent> {
+        lastEmailUsed = email
+        lastAppPasswordUsed = appPassword
+        lastFromUsed = from
+        lastUntilUsed = until
+        fetchCallCount++
+        return events
     }
 }
 
@@ -119,6 +147,10 @@ class FakeActionItemRepository : ActionItemRepository {
 
     override suspend fun addAll(items: List<ActionItem>) {
         this.items.addAll(items)
+    }
+
+    override suspend fun storeIfAbsent(item: ActionItem) {
+        if (items.none { it.id == item.id }) items.add(item)
     }
 
     override suspend fun dismiss(id: String) {
@@ -245,6 +277,7 @@ fun ApplicationTestBuilder.testModule(
     userStore: UserRepository = FakeUserRepository(),
     gmailClient: GmailClient = FakeGmailClient(),
     geminiClient: GeminiClient = FakeGeminiClient(),
+    calendarClient: CalendarClient = FakeCalendarClient(),
     oauthClient: HttpClient = fakeGoogleOAuthClient(),
     oauthRedirectBaseUrl: String = "http://localhost:8080",
     sessionSecret: String = "test-session-secret",
@@ -273,6 +306,7 @@ fun ApplicationTestBuilder.testModule(
             userStore = userStore,
             gmailClient = gmailClient,
             geminiClient = geminiClient,
+            calendarClient = calendarClient,
             oauthClient = oauthClient,
             oauthRedirectBaseUrl = oauthRedirectBaseUrl,
             sessionSecret = sessionSecret,
@@ -318,5 +352,19 @@ suspend fun ApplicationTestBuilder.signInFakeUserWithGmailConnected(
 ): HttpClient {
     val client = signInFakeUser()
     userStore.saveGmailAppPassword(sub, appPassword)
+    return client
+}
+
+// Same as signInFakeUserWithGmailConnected, plus a Calendar app password -
+// GET /inbox still gates on Gmail alone (see InboxRoutes.kt), so a calendar
+// pull test needs both connected to reach the page at all.
+suspend fun ApplicationTestBuilder.signInFakeUserWithGmailAndCalendarConnected(
+    userStore: UserRepository,
+    gmailAppPassword: String = "fake-app-password",
+    calendarAppPassword: String = "fake-calendar-app-password",
+    sub: String = TEST_SUB
+): HttpClient {
+    val client = signInFakeUserWithGmailConnected(userStore, gmailAppPassword, sub)
+    userStore.saveCalendarAppPassword(sub, calendarAppPassword)
     return client
 }

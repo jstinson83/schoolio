@@ -73,6 +73,12 @@ private val geminiHttpClient: HttpClient by lazy {
 // for the rest, and IO-bound work doesn't tie up a request-handling thread.
 private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+// Separate from oauthHttpClient/geminiHttpClient - CalDAV requests are XML,
+// not JSON, so there's no need for oauthHttpClient's ContentNegotiation
+// plugin, and they're fast/low-volume like the OAuth calls (unlike Gemini's
+// geminiHttpClient), so CIO's default timeout is fine.
+private val calendarHttpClient: HttpClient by lazy { HttpClient(CIO) }
+
 fun Application.module(
     // Falls back to a hardcoded insecure dev value if unset, same pattern as
     // sessionSecret below - fine locally, but must be set on Cloud Run or
@@ -86,6 +92,7 @@ fun Application.module(
     ),
     gmailClient: GmailClient = ImapGmailClient(),
     geminiClient: GeminiClient = RestGeminiClient(geminiHttpClient),
+    calendarClient: CalendarClient = CalDavCalendarClient(calendarHttpClient),
     oauthClient: HttpClient = oauthHttpClient,
     oauthRedirectBaseUrl: String = System.getenv("OAUTH_REDIRECT_BASE_URL") ?: "http://localhost:8080",
     sessionSecret: String = System.getenv("SESSION_SECRET") ?: "dev-insecure-session-secret",
@@ -152,7 +159,7 @@ fun Application.module(
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
             inboxRoutes(
-                userStore, gmailClient, geminiClient, settingsStore,
+                userStore, gmailClient, geminiClient, calendarClient, settingsStore,
                 messageStore, actionItemStore, scanStateStore,
                 backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs
             )

@@ -223,6 +223,127 @@ class InboxTest {
         assertEquals("original-password", userStore.find(TEST_SUB)?.gmailAppPassword)
     }
 
+    // Same shape as testConnectingGmailSavesAppPasswordAndEnablesScanning,
+    // for the separate Calendar app password (User.calendarAppPassword) -
+    // redirects back to /inbox/settings rather than /inbox (unlike Gmail's
+    // connect form) since the next real GET /inbox from the settings page
+    // link is what actually picks it up (see scheduleSync).
+    @Test
+    fun testConnectingCalendarSavesAppPassword() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+
+        val connectResponse = client.submitForm(
+            url = "/inbox/connect-calendar",
+            formParameters = Parameters.build { append("appPassword", "new-calendar-password") }
+        )
+        assertEquals(HttpStatusCode.Found, connectResponse.status)
+        assertEquals("/inbox/settings", connectResponse.headers[HttpHeaders.Location])
+        assertEquals("new-calendar-password", userStore.find(TEST_SUB)?.calendarAppPassword)
+    }
+
+    // Same "blank submission doesn't wipe out an existing value" behavior as
+    // Gmail's connect form.
+    @Test
+    fun testConnectingCalendarWithBlankPasswordDoesNotOverwriteExisting() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+        userStore.saveCalendarAppPassword(TEST_SUB, "original-calendar-password")
+
+        client.submitForm(
+            url = "/inbox/connect-calendar",
+            formParameters = Parameters.build { append("appPassword", "") }
+        )
+
+        assertEquals("original-calendar-password", userStore.find(TEST_SUB)?.calendarAppPassword)
+    }
+
+    // The point of this task: a connected Calendar's upcoming events show up
+    // in the same action-item list email-derived items do, with no Gemini
+    // step involved (see pullAndStoreCalendarEvents' doc comment) - unlike a
+    // message, a calendar event has no subject/from, so inbox.ftl falls back
+    // to "From your calendar" instead of the usual `From "<subject>"` line.
+    @Test
+    fun testInboxPullsUpcomingCalendarEventsIntoActionItemList() = testApplication {
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1",
+                    summary = "Science Fair",
+                    description = "Bring your project by 8am",
+                    start = Instant.parse("2026-09-20T13:00:00Z"),
+                    end = Instant.parse("2026-09-20T15:00:00Z")
+                )
+            )
+        )
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient)
+        val client = signInFakeUserWithGmailAndCalendarConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("Science Fair"))
+        assertTrue(body.contains("Bring your project by 8am"))
+        assertTrue(body.contains("From your calendar"))
+        assertEquals(TEST_EMAIL, calendarClient.lastEmailUsed)
+        assertEquals("fake-calendar-app-password", calendarClient.lastAppPasswordUsed)
+    }
+
+    // Re-fetching the same upcoming window on a second sync (see
+    // pullAndStoreCalendarEvents' doc comment on why there's no watermark
+    // here) must not add the same event twice - ActionItemRepository.
+    // storeIfAbsent, keyed on the event's own uid, is what prevents that.
+    @Test
+    fun testRePullingTheSameCalendarEventDoesNotDuplicateIt() = testApplication {
+        val event = CalendarEvent(
+            uid = "event-1", summary = "Science Fair", description = null,
+            start = Instant.parse("2026-09-20T13:00:00Z"), end = null
+        )
+        val calendarClient = FakeCalendarClient(listOf(event))
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        // Bypasses the resync cooldown - this test specifically needs a
+        // second real pull to prove it doesn't duplicate an already-stored
+        // event.
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore, inboxResyncCooldownMs = 0
+        )
+        val client = signInFakeUserWithGmailAndCalendarConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+        assertEquals(1, actionItemStore.items.size)
+
+        client.get("/inbox")
+        awaitCondition("Second calendar pull never ran") { calendarClient.fetchCallCount >= 2 }
+        client.awaitInboxSettled()
+        assertEquals(1, actionItemStore.items.size, "Re-pulling the same calendar event shouldn't duplicate it")
+    }
+
+    // CalendarClient.fetchEvents' window is a bounded lookahead, not an
+    // open-ended "since" the way Gmail's is - see CalendarClient.kt's doc
+    // comment on why an unbounded upper bound is the wrong shape for
+    // calendar. CALENDAR_LOOKAHEAD_DAYS controls exactly how wide.
+    @Test
+    fun testCalendarPullUsesABoundedLookaheadWindow() = testApplication {
+        val calendarClient = FakeCalendarClient()
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient)
+        val client = signInFakeUserWithGmailAndCalendarConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val from = calendarClient.lastFromUsed!!
+        val until = calendarClient.lastUntilUsed!!
+        assertEquals(CALENDAR_LOOKAHEAD_DAYS, java.time.Duration.between(from, until).toDays())
+    }
+
     @Test
     fun testInboxPromptsToConfigureSendersWhenNoneSet() = testApplication {
         val gmailClient = FakeGmailClient()
@@ -304,6 +425,27 @@ class InboxTest {
         userStore.saveGmailAppPassword(TEST_SUB, "some-app-password")
         val connectedBody = client.get("/inbox/settings").bodyAsText()
         assertTrue(connectedBody.contains("already connected"))
+    }
+
+    // Same "already connected" state, tracked independently for the Calendar
+    // app password field (see UserStore.kt's doc comment on why it's a
+    // separate field from gmailAppPassword).
+    @Test
+    fun testSettingsPageShowsCalendarAppPasswordStateIndependentlyOfGmail() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+
+        val disconnectedBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(0, Regex("already connected").findAll(disconnectedBody).count())
+
+        userStore.saveGmailAppPassword(TEST_SUB, "some-gmail-app-password")
+        val gmailOnlyBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(1, Regex("already connected").findAll(gmailOnlyBody).count())
+
+        userStore.saveCalendarAppPassword(TEST_SUB, "some-calendar-app-password")
+        val bothConnectedBody = client.get("/inbox/settings").bodyAsText()
+        assertEquals(2, Regex("already connected").findAll(bothConnectedBody).count())
     }
 
     // An action item whose known due date has already gone by moves to the
