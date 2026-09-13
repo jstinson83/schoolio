@@ -251,16 +251,20 @@ per-sender watermark the way email's lookback is. **No watermark for
 calendar, deliberately**: a watermark's job for email is keeping an
 otherwise-unbounded mailbox search narrow across repeated scans; the
 calendar window is already small and doesn't grow, so there's nothing to
-avoid re-scanning. Dedup instead comes from
-`ActionItemRepository.storeIfAbsent` (new method, alongside the existing
-`addAll` the Gemini path still uses), keyed on the calendar event's own
-`uid` — same "safe to re-fetch, no-op on what's already stored" shape as
-`MessageRepository.storeIfAbsent`.
-
-**Known gap, not solved here**: `storeIfAbsent` only guards against
-duplicate *inserts* on a re-pull — it does nothing if an already-stored
-calendar event's time/title/etc. later changes upstream (rescheduled,
-renamed, cancelled). See the reconciliation entry below.
+avoid re-scanning. Re-pulling an already-stored event uses
+`ActionItemRepository.upsertFromCalendar` (new method, alongside the
+existing `addAll` the Gemini path still uses), keyed on the calendar
+event's own `uid` — a real **upsert**, not a dedup-only
+`storeIfAbsent`/skip-if-exists (that was the first version, and the
+mistake it caused is exactly why it's called out here): Calendar is the
+ongoing source of truth, so every pull refreshes title/description/date on
+an already-stored item rather than leaving the first-ever-pulled copy
+frozen forever. Preserves the household's own `dismissed` choice across
+that refresh (a user who dismissed "Field Trip" shouldn't see it reappear
+just because the school edited its description). This is also what makes
+a Calendar-side reschedule/retitle/cancel actually show up — the
+reconciliation entry below is about a *different, harder* problem (fuzzy
+matching across sources with no shared id), not this one.
 
 **All display/grouping dates and times are Eastern (`HOUSEHOLD_ZONE` =
 `America/New_York`, `InboxRoutes.kt`), not UTC** — a `ZoneId`, not a fixed
@@ -280,9 +284,13 @@ household app for one specific household, not a multi-timezone product.
   (1) two emails describing the same event should update one action item,
   not create two — already broken today, `ActionItemStore.addAll` always
   inserts with a fresh random id, no matching against existing items at
-  all; (2) a calendar event that's edited after being pulled (rescheduled,
-  renamed, cancelled) won't be reflected — `storeIfAbsent`'s id-based dedup
-  only stops duplicate inserts, not updates; (3) an email and a calendar
+  all; (2) a calendar event *cancelled* after being pulled won't be
+  reflected — `upsertFromCalendar` (see "Lookahead, not lookback" above)
+  fixed the reschedule/retitle case since Calendar still returns a
+  cancelled instance with `status: "cancelled"`, but `toCalendarEvent`
+  drops it before it ever reaches the pull loop, so the already-stored
+  `ActionItem` for it is simply never touched again — sits in the list
+  forever instead of getting dismissed/removed; (3) an email and a calendar
   event describing the same real-world thing should be one entry, not two
   (the original ask that surfaced this). All three need the same
   underlying capability: given a new extracted/fetched record, decide

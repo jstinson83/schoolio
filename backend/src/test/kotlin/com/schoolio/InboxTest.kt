@@ -303,7 +303,7 @@ class InboxTest {
     // Re-fetching the same upcoming window on a second sync (see
     // pullAndStoreCalendarEvents' doc comment on why there's no watermark
     // here) must not add the same event twice - ActionItemRepository.
-    // storeIfAbsent, keyed on the event's own uid, is what prevents that.
+    // upsertFromCalendar, keyed on the event's own uid, is what prevents that.
     @Test
     fun testRePullingTheSameCalendarEventDoesNotDuplicateIt() = testApplication {
         val event = CalendarEvent(
@@ -330,6 +330,86 @@ class InboxTest {
         awaitCondition("Second calendar pull never ran") { calendarClient.fetchCallCount >= 2 }
         client.awaitInboxSettled()
         assertEquals(1, actionItemStore.items.size, "Re-pulling the same calendar event shouldn't duplicate it")
+    }
+
+    // Unlike email, Calendar is the ongoing source of truth - a re-pull has
+    // to refresh an already-stored event's fields (e.g. after the school
+    // retitles or reschedules it), not silently keep the stale copy forever.
+    // This is also exactly what made the Eastern-time fix (HOUSEHOLD_ZONE)
+    // not visibly take effect for an event already synced before that fix
+    // shipped - upsertFromCalendar (not a plain dedup-only storeIfAbsent) is
+    // the actual fix for that.
+    @Test
+    fun testRePullingAnAlreadyStoredCalendarEventRefreshesItsFields() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1", summary = "Science Fair", description = "Bring your project",
+                    start = Instant.parse("2026-09-20T13:00:00Z"), allDay = false, end = null
+                )
+            )
+        )
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore, inboxResyncCooldownMs = 0
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+        assertEquals("Science Fair", actionItemStore.items.single().title)
+
+        // The school reschedules/retitles the same event (same uid) before
+        // the next sync.
+        calendarClient.setEvents(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1", summary = "Science Fair - MOVED to Friday", description = "Bring your project",
+                    start = Instant.parse("2026-09-19T13:00:00Z"), allDay = false, end = null
+                )
+            )
+        )
+
+        client.get("/inbox")
+        awaitCondition("Second calendar pull never ran") { calendarClient.fetchCallCount >= 2 }
+        client.awaitInboxSettled()
+
+        assertEquals(1, actionItemStore.items.size, "Should still be the same item, just refreshed")
+        assertEquals("Science Fair - MOVED to Friday", actionItemStore.items.single().title)
+    }
+
+    // A refresh on re-pull (see the test above) shouldn't undo the
+    // household's own decision to dismiss an item just because the school
+    // edited something unrelated about the event.
+    @Test
+    fun testDismissedStaysDismissedAcrossACalendarRefresh() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        val calendarClient = FakeCalendarClient(
+            listOf(
+                CalendarEvent(
+                    uid = "event-1", summary = "Science Fair", description = null,
+                    start = Instant.parse("2026-09-20T13:00:00Z"), allDay = false, end = null
+                )
+            )
+        )
+        testModule(
+            userStore = userStore, gmailClient = FakeGmailClient(emptyList()), calendarClient = calendarClient,
+            actionItemStore = actionItemStore, inboxResyncCooldownMs = 0
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+
+        client.get("/inbox")
+        client.awaitInboxSettled()
+        actionItemStore.dismiss(actionItemStore.items.single().id)
+
+        client.get("/inbox")
+        awaitCondition("Second calendar pull never ran") { calendarClient.fetchCallCount >= 2 }
+        client.awaitInboxSettled()
+
+        assertTrue(actionItemStore.items.single().dismissed, "Re-pulling shouldn't un-dismiss an already-dismissed item")
     }
 
     // CalendarClient.fetchEvents' window is a bounded lookahead, not an

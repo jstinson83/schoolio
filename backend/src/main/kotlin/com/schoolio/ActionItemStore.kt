@@ -46,13 +46,22 @@ interface ActionItemRepository {
     // because Gemini-derived items always get a fresh random id (see
     // ActionItem.id's default), so there's nothing to collide with.
     suspend fun addAll(items: List<ActionItem>)
-    // Unlike addAll, a no-op if [item.id] already exists - for the calendar
-    // pull (pullAndStoreCalendarEvents), which re-fetches the same [from,
-    // until] window on every sync and needs re-seeing an already-stored
-    // event to not duplicate it, same "storeIfAbsent" dedup shape as
-    // MessageRepository (see MessageStore.kt) keyed on a stable id (here,
-    // the calendar event's own uid) rather than a fresh random one.
-    suspend fun storeIfAbsent(item: ActionItem)
+    // For the calendar pull (pullAndStoreCalendarEvents), keyed on a stable
+    // id (the calendar event's own uid) rather than addAll's fresh random
+    // one. Unlike email (an EmailMessage's content is immutable once
+    // received, so MessageRepository.storeIfAbsent's plain "skip if it
+    // already exists" dedup is correct there), Google Calendar is the
+    // ongoing source of truth for an event - it can be retitled or
+    // rescheduled between pulls, so this refreshes title/description/date
+    // on every pull rather than only inserting once. Preserves whatever the
+    // household already decided about [dismissed] across that refresh - an
+    // item they dismissed shouldn't silently reappear just because the
+    // school edited its description. (Was a plain storeIfAbsent at first,
+    // dedup-only like the email pattern - that's what made the Eastern-time
+    // fix (see HOUSEHOLD_ZONE) not visibly take effect for an event already
+    // pulled before that fix shipped: the stored id already existed, so the
+    // freshly-recomputed value was silently discarded every sync after.)
+    suspend fun upsertFromCalendar(item: ActionItem)
     // Flips dismissed on/off for one item - a single-field update rather than
     // rewriting the whole document, since nothing else about the item changes
     // when it's dismissed or restored.
@@ -79,11 +88,13 @@ class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRep
     // "proportionate to a two-person app, not overengineered" call as the
     // rest of this codebase; the calendar pull's own per-user resync
     // cooldown (InboxRoutes.kt) already keeps concurrent calls for the same
-    // user vanishingly unlikely.
-    override suspend fun storeIfAbsent(item: ActionItem) {
+    // user vanishingly unlikely. Reads the existing doc only to carry its
+    // [dismissed] value forward - everything else in [item] always wins,
+    // since Calendar is the source of truth for title/description/date.
+    override suspend fun upsertFromCalendar(item: ActionItem) {
         val docRef = collection.document(item.id)
-        if (docRef.get().get().exists()) return
-        docRef.set(itemToMap(item)).get()
+        val existingDismissed = docRef.get().get().getBoolean("dismissed")
+        docRef.set(itemToMap(item.copy(dismissed = existingDismissed ?: item.dismissed))).get()
     }
 
     override suspend fun dismiss(id: String) {

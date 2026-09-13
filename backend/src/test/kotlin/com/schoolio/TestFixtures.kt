@@ -69,7 +69,14 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
     }
 }
 
-class FakeCalendarClient(private val events: List<CalendarEvent> = emptyList()) : CalendarClient {
+class FakeCalendarClient(private var events: List<CalendarEvent> = emptyList()) : CalendarClient {
+    // Lets a test change what the "calendar" returns between two pulls (e.g.
+    // simulating the school retitling/rescheduling an event) without
+    // needing a second FakeCalendarClient/testModule setup.
+    fun setEvents(newEvents: List<CalendarEvent>) {
+        events = newEvents
+    }
+
     var lastCalendarIdUsed: String? = null
         private set
     var lastFromUsed: Instant? = null
@@ -142,8 +149,9 @@ class FakeActionItemRepository : ActionItemRepository {
         this.items.addAll(items)
     }
 
-    override suspend fun storeIfAbsent(item: ActionItem) {
-        if (items.none { it.id == item.id }) items.add(item)
+    override suspend fun upsertFromCalendar(item: ActionItem) {
+        val index = items.indexOfFirst { it.id == item.id }
+        if (index >= 0) items[index] = item.copy(dismissed = items[index].dismissed) else items.add(item)
     }
 
     override suspend fun dismiss(id: String) {
