@@ -188,38 +188,60 @@ viewing ever becomes a goal.
 
 ## Calendar pull (decided, live)
 
-Pulls from Google Calendar as a second input source alongside Gmail, via
-**CalDAV + a separate Google app password**, not the Calendar REST API/
-OAuth — same reasoning as the Gmail IMAP decision above (avoids OAuth scope/
-verification complexity; app passwords aren't scoped per-protocol, so the
-same mechanism that unlocked IMAP access also unlocks CalDAV). Kept as a
-distinct field/credential from Gmail's rather than reusing it, so either can
-be rotated/revoked independently — see `User.calendarAppPassword`
-(`UserStore.kt`) and its own `/inbox/connect-calendar` form on the settings
-page (`settings.ftl`, `GET`/`POST /inbox/settings`), same shape as the
-existing Gmail connect form.
+Pulls from Google Calendar as a second input source alongside Gmail. Access
+is via **a single shared Google Cloud service account**, not per-user OAuth
+or an app password — see "Calendar auth: CalDAV + app password doesn't
+work, service account instead" below for why the first two approaches tried
+here didn't pan out.
 
-`CalendarClient.kt` (`CalDavCalendarClient`) does real CalDAV
-REPORT/calendar-query request construction and Basic Auth (tested against a
-fabricated response in `CalDavCalendarClientTest` via MockEngine, not a live
-Google account yet) plus a hand-rolled iCalendar VEVENT parser. Known
-parsing gaps documented on the class itself: no RRULE/recurring-event
-expansion, no all-day (`VALUE=DATE`) events, no TZID-qualified local times —
-only the plain UTC-timestamped case is handled.
+`CalendarClient.kt` (`GoogleCalendarApiClient`) mints/refreshes an access
+token from a `GoogleCredentials` already scoped to
+`https://www.googleapis.com/auth/calendar.readonly` (via
+`google-auth-library-oauth2-http`, already resolved transitively through
+`google-cloud-firestore` at 1.33.1 — declared explicitly in
+`build.gradle.kts` since our own code imports it directly) and calls the
+real Calendar API v3 (`GET /calendars/{calendarId}/events`) as plain JSON
+over the existing Ktor `HttpClient` — no per-third-party-API SDK, same
+convention as `GeminiClient`/`GmailClient`. `calendarId` is a user's own
+email (their primary calendar's id). Handles Google's actual
+`EventDateTime` shape: a timed event's `dateTime` is RFC3339 *with an
+explicit offset* (parsed via `OffsetDateTime`, not `Instant.parse`, which
+only accepts a bare `Z`), an all-day event's `date` is a bare `yyyy-MM-dd`
+with no time at all — `CalendarEvent.allDay` carries that distinction
+through so `pullAndStoreCalendarEvents` doesn't fabricate a fake midnight
+time for something like "No School - Teacher PD Day". `singleEvents=true`
+expands recurring events into individual occurrences within the window
+rather than one record per indefinite series; a `status: "cancelled"`
+occurrence is dropped rather than turned into an `ActionItem` (no
+update/cancel handling yet either way - see the reconciliation entry below).
+
+**No per-user credential to store or connect at all** — `User` has no
+calendar-related field. Each household member does a one-time step entirely
+on Google's side (Calendar → Settings and sharing → share with the service
+account's email, "See all event details") — nothing to submit in the app.
+`/inbox/settings` just displays the service account's email
+(`calendarServiceAccountEmail`, read from the loaded key's `client_email`)
+so a user knows what to share with. One service account can read *both*
+household members' calendars, since each just grants it access to their own
+- no domain/Workspace requirement, ordinary personal-calendar sharing.
 
 **Wired into `InboxRoutes.kt`'s existing background-pull infra**
-(`scheduleSync`) rather than a separate pipeline: when a user's
-`calendarAppPassword` is set, the same debounced per-user job that pulls
-Gmail also calls `pullAndStoreCalendarEvents` right after. A calendar event
-carries structured fields (title, start/end) natively, so it **skips Gemini
-extraction** entirely (unlike an `EmailMessage`, which needs the LLM step to
-find a date/title in free text) and turns directly into an `ActionItem` via
+(`scheduleSync`) rather than a separate pipeline, in its own try/catch
+alongside (not merged into) the Gmail pull's — the two are independent
+(one failing shouldn't skip the other), and a calendar failure is routinely
+*expected* until the sharing step above is done, unlike a Gmail failure, so
+it logs at `debug` rather than `warn`. A calendar event carries structured
+fields (title, start/end) natively, so it **skips Gemini extraction**
+entirely (unlike an `EmailMessage`, which needs the LLM step to find a
+date/title in free text) and turns directly into an `ActionItem` via
 `ActionItem.sourceCalendarEventId` — a calendar-derived item has
 `sourceMessageId = null` (that field is nullable now), and inbox.ftl shows
 "From your calendar" instead of the usual `From "<subject>"` line when
 there's no source message. Calendar access is additive, unlike Gmail's hard
-gate on `GET /inbox`: no Calendar app password just means the pull is
-skipped, not that the page won't load.
+gate on `GET /inbox`: `calendarClient` is nullable (null when
+`CALENDAR_SERVICE_ACCOUNT_KEY` isn't set on a given deployment at all), and
+even when configured, a not-yet-shared calendar just means that one user's
+pull fails quietly - the page loads fine either way.
 
 **Lookahead, not lookback**: unlike email (where what matters is catching up
 on the past), what's useful for calendar is what's coming up. Each pull
@@ -421,7 +443,11 @@ issuing one IMAP search covering every sender in that single window.
   not these env vars), `GEMINI_API_KEY` (required for `RestGeminiClient` to
   authenticate against `generativelanguage.googleapis.com`), `GEMINI_MODEL`
   (defaults to `gemini-3.6-flash` — verify against `foodie`'s current model
-  first, see CLAUDE.md's Gemini gotchas).
+  first, see CLAUDE.md's Gemini gotchas), `CALENDAR_SERVICE_ACCOUNT_KEY`
+  (the full downloaded service-account JSON key content, not a file path —
+  see "Calendar pull" above; absent entirely means Calendar access is off
+  for that deployment, `calendarClient`/`calendarServiceAccountEmail` both
+  come out `null`, no crash).
 - **Firestore database**: created and confirmed working — real sign-in on
   the deployed Cloud Run service has round-tripped through
   `FirestoreUserStore` successfully. Database id/region weren't

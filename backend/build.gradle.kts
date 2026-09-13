@@ -32,6 +32,17 @@ dependencies {
     // IMAP client for ImapGmailClient - Gmail access now goes through IMAP +
     // per-user app passwords, not the Gmail REST API/OAuth (see GmailClient.kt).
     implementation("com.sun.mail:jakarta.mail:2.0.1")
+    // Service-account credential loading/token minting for GoogleCalendarApiClient
+    // (see CalendarClient.kt) - already resolved transitively via
+    // google-cloud-firestore above at this exact version, declared explicitly
+    // here since our own code imports it directly. Calendar access goes
+    // through a shared service account, not a per-user OAuth flow or app
+    // password - Google's CalDAV endpoint (the app-password approach tried
+    // first) rejects Basic Auth outright, see context.md's Calendar pull
+    // section. The actual Calendar API v3 call itself is still a plain REST
+    // request via the existing Ktor HttpClient - this library is only for
+    // minting the bearer token.
+    implementation("com.google.auth:google-auth-library-oauth2-http:1.33.1")
     testImplementation("io.ktor:ktor-server-tests-jvm")
     testImplementation("io.ktor:ktor-client-mock-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
