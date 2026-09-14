@@ -27,21 +27,23 @@ data class ExtractedActionItem(val title: String, val description: String, val d
 
 data class EmailExtraction(val summary: String, val actionItems: List<ExtractedActionItem>)
 
-// Gemini's raw output for one event read off a photographed calendar (a
-// physical wall/paper calendar, printed school schedule, or whiteboard) - the
-// photo-import counterpart of ExtractedActionItem above. Unlike an email,
-// there's no "nothing actionable" case worth modeling: a calendar entry is
-// itself the thing to track, so date is non-optional here (Gemini's prompt
-// asks it to skip anything it can't date confidently rather than emit a
-// dateless entry) - InboxRoutes still lets a household member edit/reject
-// each one on the review step before anything is persisted, since photo
-// OCR/handwriting reads are much more error-prone than either the email or
+// Gemini's raw output for one event read off an uploaded calendar (a photo of
+// a physical wall/paper calendar, a printed school schedule, a whiteboard, a
+// PDF, or a Word document) - the photo-import counterpart of
+// ExtractedActionItem above. Unlike an email, there's no "nothing actionable"
+// case worth modeling: a calendar entry is itself the thing to track, so date
+// is non-optional here (Gemini's prompt asks it to skip anything it can't
+// date confidently rather than emit a dateless entry) - InboxRoutes still
+// lets a household member edit/reject each one on the review step before
+// anything is persisted, since OCR/handwriting reads (and even a plain-text
+// transcription) are much more error-prone than either the email or
 // Calendar-API extraction paths.
 data class ExtractedCalendarEvent(val title: String, val date: String, val time: String? = null, val description: String? = null)
 
 interface GeminiClient {
     suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction
     suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent>
+    suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent>
 }
 
 @Serializable
@@ -181,37 +183,57 @@ class RestGeminiClient(
         )
     }
 
-    // Same generateContent endpoint as extract() above, but the request's
-    // parts are (prompt text, inlineData photo) instead of (prompt text
-    // alone) - Gemini's vision input is just another Part in the same
-    // request shape, not a different endpoint. today anchors the prompt's
-    // year-inference instruction (a calendar photo showing only day-of-week/
-    // day-of-month, e.g. a whiteboard's "Tue 9/15" with no year printed
-    // anywhere) - HOUSEHOLD_ZONE (InboxRoutes.kt, same package) rather than
-    // the server's local zone or UTC, matching every other "what day is it"
-    // decision in this app.
-    override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> {
+    // Shared between extractCalendarEventsFromImage and
+    // extractCalendarEventsFromText below - the two only differ in how the
+    // source calendar content reaches Gemini (an inlineData part with raw
+    // bytes vs. a second text part), not in what's being asked for or the
+    // schema constraining the response. [source] fills in the one sentence
+    // describing what's being read (a photo/PDF vs. already-extracted
+    // document text) so the wording still makes sense either way. today
+    // anchors the year-inference instruction (a calendar showing only
+    // day-of-week/day-of-month, e.g. a whiteboard's "Tue 9/15" with no year
+    // printed anywhere) - HOUSEHOLD_ZONE (InboxRoutes.kt, same package)
+    // rather than the server's local zone or UTC, matching every other "what
+    // day is it" decision in this app.
+    private fun calendarEventsPrompt(source: String): String {
         val today = LocalDate.now(HOUSEHOLD_ZONE)
-        val prompt = """
-            You are helping a parent transcribe events from a photo of a calendar - this
-            could be a physical wall/paper calendar, a printed school schedule, or a
-            whiteboard. Extract every event, appointment, or reminder that's legibly
-            written on it. For each one, give:
+        return """
+            You are helping a parent transcribe events from $source - this could be a
+            physical wall/paper calendar, a printed school schedule, or a whiteboard.
+            Extract every event, appointment, or reminder that's legibly written on it.
+            For each one, give:
             - title: a short label (a few words).
-            - date: the event's date as YYYY-MM-DD. If the photo shows a month/year
-              header, use it. If only day numbers or a day-of-week are visible with no
-              year printed anywhere, infer the year using today's date ($today) as your
-              reference point - assume the nearest real-world occurrence of that
-              month/day, not necessarily the current calendar year.
+            - date: the event's date as YYYY-MM-DD. If a month/year header is shown, use
+              it. If only day numbers or a day-of-week are visible with no year printed
+              anywhere, infer the year using today's date ($today) as your reference
+              point - assume the nearest real-world occurrence of that month/day, not
+              necessarily the current calendar year.
             - time: the event's time as 24-hour HH:MM, only if a time is actually
               written down for it. Omit this field entirely if no time is shown.
             - description: any other short notes visible for the event. Omit this
               field if there's nothing beyond the title.
             Skip anything illegible or too ambiguous to date confidently rather than
-            guessing. If the photo has no calendar or no dated entries at all, return
-            an empty list.
+            guessing. If there's no calendar or no dated entries at all, return an
+            empty list.
         """.trimIndent()
+    }
 
+    private fun parseCalendarEvents(response: GenerateContentResponse): List<ExtractedCalendarEvent> {
+        val text = response.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: return emptyList()
+        val payload = Json { ignoreUnknownKeys = true }.decodeFromString<CalendarEventsExtractionPayload>(stripJsonFence(text))
+        return payload.events.map { ExtractedCalendarEvent(it.title, it.date, it.time, it.description) }
+    }
+
+    // Same generateContent endpoint as extract() above, but the request's
+    // parts are (prompt text, inlineData file) instead of (prompt text
+    // alone) - Gemini's vision input is just another Part in the same
+    // request shape, not a different endpoint. Used for both photos and
+    // PDFs (mimeType is whatever the upload actually was) - Gemini reads a
+    // PDF's pages the same way it reads an image, so no separate handling is
+    // needed here beyond passing the real mimeType through. Word documents
+    // don't go through this path at all (Gemini doesn't accept docx as
+    // inlineData) - see extractCalendarEventsFromText instead.
+    override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> {
         val response = httpClient.post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent") {
             parameter("key", apiKey)
             contentType(ContentType.Application.Json)
@@ -220,7 +242,7 @@ class RestGeminiClient(
                     contents = listOf(
                         GeminiContent(
                             listOf(
-                                GeminiPart(text = prompt),
+                                GeminiPart(text = calendarEventsPrompt("a photo or PDF of a calendar")),
                                 GeminiPart(inlineData = GeminiInlineData(mimeType, Base64.getEncoder().encodeToString(imageBytes)))
                             )
                         )
@@ -230,9 +252,29 @@ class RestGeminiClient(
             )
         }.body<GenerateContentResponse>()
 
-        val text = response.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: return emptyList()
-        val payload = Json { ignoreUnknownKeys = true }.decodeFromString<CalendarEventsExtractionPayload>(stripJsonFence(text))
-        return payload.events.map { ExtractedCalendarEvent(it.title, it.date, it.time, it.description) }
+        return parseCalendarEvents(response)
+    }
+
+    // Word-document (.docx) counterpart of extractCalendarEventsFromImage -
+    // InboxRoutes.kt's extractDocxText pulls the plain text out locally
+    // first (Gemini has no inlineData mimeType for docx), so this sends it
+    // as a second text part appended after the prompt instead of an
+    // inlineData part, same shape as extract()'s email body.
+    override suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent> {
+        val prompt = calendarEventsPrompt("the calendar/schedule text below, extracted from an uploaded document") +
+            "\n\nDocument text:\n$documentText"
+        val response = httpClient.post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent") {
+            parameter("key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(
+                GenerateContentRequest(
+                    contents = listOf(GeminiContent(listOf(GeminiPart(text = prompt)))),
+                    generationConfig = GeminiGenerationConfig(responseSchema = calendarEventsExtractionSchema)
+                )
+            )
+        }.body<GenerateContentResponse>()
+
+        return parseCalendarEvents(response)
     }
 
     // Gemini sometimes wraps its JSON response in a markdown code fence even

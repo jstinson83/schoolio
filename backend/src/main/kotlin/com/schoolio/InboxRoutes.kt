@@ -12,7 +12,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayInputStream
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -20,12 +23,26 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
-// Hard cap on an uploaded calendar photo (see POST /inbox/import-photo/extract) - a
-// generous ceiling for an actual phone-camera photo (a few MB), just there
-// to reject something absurd (a misdirected large file) before it's
-// base64-encoded and sent to Gemini, not a real capacity limit for a
-// two-person app.
-const val MAX_IMPORT_PHOTO_BYTES = 15 * 1024 * 1024
+// Hard cap on an uploaded calendar file (see POST /inbox/import-photo/extract) - a
+// generous ceiling for an actual phone-camera photo or a multi-page PDF/docx
+// (a few MB), just there to reject something absurd (a misdirected large
+// file) before it's read into memory and sent to Gemini, not a real capacity
+// limit for a two-person app.
+const val MAX_IMPORT_FILE_BYTES = 15 * 1024 * 1024
+
+private const val DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+// Word's own paragraph/table text, not any embedded images/headers-footers -
+// XWPFWordExtractor.text already joins paragraphs with newlines, which is
+// all Gemini needs as plain-text calendar/schedule content (see
+// GeminiClient.kt's extractCalendarEventsFromText). Throws on anything that
+// isn't a real .docx (e.g. an old binary .doc renamed to that extension) -
+// left to the caller's existing try/catch around the whole extraction, same
+// as a Gemini failure.
+private fun extractDocxText(bytes: ByteArray): String =
+    XWPFDocument(ByteArrayInputStream(bytes)).use { doc ->
+        XWPFWordExtractor(doc).use { it.text }
+    }
 
 // Every "what day/time is this" computation across the app - calendar event
 // display, calendar all-day-event date anchoring (CalendarClient.kt), the
@@ -349,18 +366,19 @@ fun Route.inboxRoutes(
 
     // The photo-import feature lives directly on the main /inbox page
     // (inbox.ftl/app.js) - a "+" FAB in the bottom corner expands into "Take
-    // a photo"/"Choose a file", and every photo's extracted events land in
-    // one on-page review list, so taking several photos of a multi-month
-    // calendar builds up one review batch instead of navigating away and
-    // back. No separate page for this at all (there used to be one at
-    // GET /inbox/import-photo - removed since there's no reason to leave
-    // /inbox to add a photo). The review list starts empty - nothing is
-    // rendered server-side, it's all built client-side from this route's
-    // JSON responses.
+    // a photo"/"Choose a file" (the latter also accepting a PDF or Word
+    // document, not just images - see libraryInput's accept list in
+    // inbox.ftl), and every upload's extracted events land in one on-page
+    // review list, so adding several files for a multi-month calendar builds
+    // up one review batch instead of navigating away and back. No separate
+    // page for this at all (there used to be one at GET /inbox/import-photo -
+    // removed since there's no reason to leave /inbox to add one). The
+    // review list starts empty - nothing is rendered server-side, it's all
+    // built client-side from this route's JSON responses.
     //
-    // Called via fetch() once per photo (see app.js) rather than a plain
-    // form post, specifically so the page can append this call's events
-    // onto whatever earlier photos already added instead of a normal form
+    // Called via fetch() once per file (see app.js) rather than a plain form
+    // post, specifically so the page can append this call's events onto
+    // whatever earlier uploads already added instead of a normal form
     // submission's whole-page reload wiping out that in-progress review
     // list. Returns JSON, never a rendered page - PhotoExtractionResponse's
     // doc comment covers why every "nothing to show" case (bad upload,
@@ -368,41 +386,49 @@ fun Route.inboxRoutes(
     // otherwise-200 response rather than a non-2xx status. Doesn't persist
     // anything itself - unlike the Calendar API pull (structured fields
     // straight from Google's own data), reading dates/titles off a
-    // photographed calendar is exactly the kind of error-prone OCR/
-    // handwriting read that's worth a household member's eyes before
-    // anything lands on /inbox (see context.md's "How much human review..."
-    // open question - photo import is the one path here that resolves it in
-    // favor of confirm-first), so POST /inbox/import-photo/confirm below is
-    // still what actually calls actionItemStore, once for every photo's
-    // events at once.
+    // photographed or scanned calendar is exactly the kind of error-prone
+    // OCR/handwriting/transcription read that's worth a household member's
+    // eyes before anything lands on /inbox (see context.md's "How much human
+    // review..." open question - photo import is the one path here that
+    // resolves it in favor of confirm-first), so POST
+    // /inbox/import-photo/confirm below is still what actually calls
+    // actionItemStore, once for every upload's events at once.
     post("/inbox/import-photo/extract") {
-        var imageBytes: ByteArray? = null
+        var fileBytes: ByteArray? = null
         var mimeType: String? = null
         call.receiveMultipart().forEachPart { part ->
-            if (part is PartData.FileItem && imageBytes == null) {
-                mimeType = part.contentType?.toString() ?: "image/jpeg"
-                imageBytes = part.provider().readBytes()
+            if (part is PartData.FileItem && fileBytes == null) {
+                mimeType = part.contentType?.toString()
+                fileBytes = part.provider().readBytes()
             }
             part.dispose()
         }
-        val bytes = imageBytes
+        val bytes = fileBytes
         if (bytes == null || bytes.isEmpty()) {
-            call.respond(PhotoExtractionResponse(error = "Choose a photo to upload."))
+            call.respond(PhotoExtractionResponse(error = "Choose a photo, PDF, or Word document to upload."))
             return@post
         }
-        if (bytes.size > MAX_IMPORT_PHOTO_BYTES) {
-            call.respond(PhotoExtractionResponse(error = "That photo is too large - try a smaller one."))
+        if (bytes.size > MAX_IMPORT_FILE_BYTES) {
+            call.respond(PhotoExtractionResponse(error = "That file is too large - try a smaller one."))
             return@post
         }
         val events = try {
-            geminiClient.extractCalendarEventsFromImage(bytes, mimeType ?: "image/jpeg")
+            when {
+                mimeType == DOCX_MIME_TYPE -> geminiClient.extractCalendarEventsFromText(extractDocxText(bytes))
+                mimeType == null || mimeType?.startsWith("image/") == true || mimeType == "application/pdf" ->
+                    geminiClient.extractCalendarEventsFromImage(bytes, mimeType ?: "image/jpeg")
+                else -> {
+                    call.respond(PhotoExtractionResponse(error = "Choose a photo, PDF, or Word document to upload."))
+                    return@post
+                }
+            }
         } catch (e: Exception) {
-            logger.warn("Photo calendar extraction failed", e)
-            call.respond(PhotoExtractionResponse(error = "Couldn't read that photo - try a clearer picture."))
+            logger.warn("Calendar extraction failed", e)
+            call.respond(PhotoExtractionResponse(error = "Couldn't read that file - try again."))
             return@post
         }
         if (events.isEmpty()) {
-            call.respond(PhotoExtractionResponse(error = "No events found in that photo."))
+            call.respond(PhotoExtractionResponse(error = "No events found in that file."))
             return@post
         }
         call.respond(

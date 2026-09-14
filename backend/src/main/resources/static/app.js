@@ -238,17 +238,18 @@ if ('serviceWorker' in navigator) {
     stagingCard.hidden = true;
   }
 
-  // No separate "Extract events" step - picking a photo (via either input)
+  // No separate "Extract events" step - picking a file (via either input,
+  // libraryInput also accepting a PDF or Word document, not just an image)
   // starts the extraction immediately, since there's nothing for a household
   // member to configure first; the staging card here is purely a progress
-  // indicator (with a cancel) while Gemini reads the photo, not a
+  // indicator (with a cancel) while Gemini reads it, not a
   // confirm-before-you-start prompt.
   async function onFileChosen(file) {
     if (!file) return;
     currentFile = file;
     importError.hidden = true;
-    stagingName.textContent = file.name || 'calendar-photo.jpg';
-    stagingStatus.textContent = 'Reading the photo…';
+    stagingName.textContent = file.name || 'calendar-file';
+    stagingStatus.textContent = 'Reading the file…';
     stagingCard.hidden = false;
     stagingCard.scrollIntoView({ block: 'nearest' });
 
