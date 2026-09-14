@@ -645,8 +645,9 @@ h1, h2, h3 {
     border-radius: 999px;
 }
 
-/* Staging card - shown once a photo has been picked via the FAB, before
-   "Extract events" has been pressed (see app.js's import-photo block). */
+/* Staging card - a progress indicator (with a cancel) while a just-picked
+   photo is being read, shown from the moment a file is chosen via the FAB
+   until that extraction resolves (see app.js's import-photo block). */
 .staging-card {
     display: flex;
     align-items: center;
@@ -719,7 +720,7 @@ h1, h2, h3 {
     background: linear-gradient(to top, var(--page-bg) 65%, transparent);
 }
 
-/* Floating action button + its speed-dial menu - bottom-left, fixed to the
+/* Floating action button + its speed-dial menu - bottom-right, fixed to the
    viewport (not the .inbox content column) so it stays reachable with a
    thumb regardless of scroll position, same reasoning a native mobile app
    FAB would use. .fab-container is anchored at the same fixed point as the
@@ -728,19 +729,27 @@ h1, h2, h3 {
    column's bottom edge, which is what's pinned to the viewport. */
 .fab-container {
     position: fixed;
-    left: 1.25rem;
+    right: 1.25rem;
     bottom: 1.25rem;
     z-index: 15;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: flex-end;
     gap: 0.85rem;
 }
 
-.fab-menu {
+/* :not([hidden]), not a bare .fab-menu rule - an author stylesheet's
+   "display: flex" always beats the browser's own default [hidden] { display:
+   none } at equal specificity (author styles win over user-agent styles
+   regardless of selector, only cascade origin matters here), so a bare rule
+   would keep the menu visible even while the [hidden] attribute is set. Same
+   pattern nav.ftl's own menu already uses (see .app-nav-menu:not([hidden])
+   above) - this just hadn't been applied here yet. */
+.fab-menu:not([hidden]) {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+    align-items: flex-end;
 }
 
 /* Each option fades/slides up into place from behind the main button - a
