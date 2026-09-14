@@ -198,6 +198,8 @@ class FakeGeminiClient(
         private set
     var lastImageMimeType: String? = null
         private set
+    var lastDocumentText: String? = null
+        private set
 
     override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
         extractedSubjects.add(subject)
@@ -207,6 +209,11 @@ class FakeGeminiClient(
     override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> {
         lastImageBytesSize = imageBytes.size
         lastImageMimeType = mimeType
+        return photoEvents
+    }
+
+    override suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent> {
+        lastDocumentText = documentText
         return photoEvents
     }
 }

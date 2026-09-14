@@ -123,6 +123,9 @@ class InboxTest {
 
             override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> =
                 error("Gemini is down")
+
+            override suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent> =
+                error("Gemini is down")
         }
         val userStore = FakeUserRepository()
         val messageStore = FakeMessageRepository()

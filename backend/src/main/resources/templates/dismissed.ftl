@@ -33,7 +33,7 @@
                                 <#if action.subject?has_content>
                                     <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
                                 <#elseif action.photoImport>
-                                    <p class="action-source">From a photo you uploaded</p>
+                                    <p class="action-source">From a file you uploaded</p>
                                 <#else>
                                     <p class="action-source">From your calendar</p>
                                 </#if>

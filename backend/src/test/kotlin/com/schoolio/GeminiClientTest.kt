@@ -165,4 +165,60 @@ class GeminiClientTest {
 
         assertEquals(emptyList(), events)
     }
+
+    @Test
+    fun testExtractCalendarEventsFromImageAcceptsAPdfMimeType() = runBlocking {
+        // Gemini reads a PDF's pages via the same inlineData mechanism as an
+        // image - extractCalendarEventsFromImage just forwards whatever
+        // mimeType the upload actually was, so this proves that path isn't
+        // hardcoded to image/* somewhere.
+        var sawInlineDataMimeType: String? = null
+        val httpClient = mockClient { request ->
+            val bodyText = String((request.body as OutgoingContent.ByteArrayContent).bytes())
+            val requestJson = Json.parseToJsonElement(bodyText).jsonObject
+            val parts = requestJson["contents"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray
+            val inlineDataPart = parts.first { it.jsonObject.containsKey("inlineData") }.jsonObject["inlineData"]!!.jsonObject
+            sawInlineDataMimeType = inlineDataPart["mimeType"]?.jsonPrimitive?.content
+            respond(
+                """{"candidates": [{"content": {"parts": [{"text": "{\"events\":[{\"title\":\"Winter concert\",\"date\":\"2026-12-10\"}]}"}]}}]}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            )
+        }
+
+        val events = RestGeminiClient(httpClient, apiKey = "fake-api-key")
+            .extractCalendarEventsFromImage(byteArrayOf(1, 2, 3), "application/pdf")
+
+        assertEquals("application/pdf", sawInlineDataMimeType)
+        assertEquals(1, events.size)
+        assertEquals("Winter concert", events[0].title)
+    }
+
+    @Test
+    fun testExtractCalendarEventsFromTextSendsDocumentTextAsAPlainTextPartAndParsesEvents() = runBlocking {
+        var sawRequestText: String? = null
+        val httpClient = mockClient { request ->
+            val bodyText = String((request.body as OutgoingContent.ByteArrayContent).bytes())
+            val requestJson = Json.parseToJsonElement(bodyText).jsonObject
+            val parts = requestJson["contents"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray
+            // Unlike the image/PDF path, there's no inlineData part at all here -
+            // the extracted document text rides along inside the single text part.
+            assertEquals(1, parts.size)
+            sawRequestText = parts[0].jsonObject["text"]?.jsonPrimitive?.content
+            respond(
+                """{"candidates": [{"content": {"parts": [{"text": "{\"events\":[{\"title\":\"Spirit week\",\"date\":\"2026-10-13\"}]}"}]}}]}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            )
+        }
+
+        val events = RestGeminiClient(httpClient, apiKey = "fake-api-key")
+            .extractCalendarEventsFromText("Oct 13-17: Spirit week\nOct 20: Picture retakes")
+
+        assertTrue(sawRequestText!!.contains("Oct 13-17: Spirit week"))
+        assertTrue(sawRequestText!!.contains("Oct 20: Picture retakes"))
+        assertEquals(1, events.size)
+        assertEquals("Spirit week", events[0].title)
+        assertEquals("2026-10-13", events[0].date)
+    }
 }

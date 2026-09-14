@@ -43,6 +43,13 @@ dependencies {
     // request via the existing Ktor HttpClient - this library is only for
     // minting the bearer token.
     implementation("com.google.auth:google-auth-library-oauth2-http:1.33.1")
+    // Word-document (.docx) text extraction for the photo-import FAB's
+    // "Choose a file" option (InboxRoutes.kt's extractDocxText) - Gemini's
+    // generateContent doesn't accept docx as inlineData the way it does
+    // images/PDFs, so the text has to be pulled out locally first and sent
+    // as a plain-text prompt instead (see GeminiClient.kt's
+    // extractCalendarEventsFromText).
+    implementation("org.apache.poi:poi-ooxml:5.5.1")
     testImplementation("io.ktor:ktor-server-tests-jvm")
     testImplementation("io.ktor:ktor-client-mock-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")

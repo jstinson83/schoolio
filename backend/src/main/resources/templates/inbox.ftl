@@ -24,7 +24,7 @@
             </div>
             <div class="staging-info">
                 <div id="stagingName" class="staging-name"></div>
-                <div id="stagingStatus" class="staging-status">Reading the photo&hellip;</div>
+                <div id="stagingStatus" class="staging-status">Reading the file&hellip;</div>
             </div>
             <div class="staging-actions">
                 <button type="button" id="stagingCancel" class="btn btn-ghost" aria-label="Cancel">&#x2715;</button>
@@ -34,7 +34,7 @@
         <form id="confirmForm" method="post" action="/inbox/import-photo/confirm">
             <input type="hidden" name="count" id="eventCount" value="0">
             <section id="photoReviewSection" class="photo-review-section" hidden>
-                <h2>From your photo <span class="photo-review-tag">not yet added</span></h2>
+                <h2>From your upload <span class="photo-review-tag">not yet added</span></h2>
                 <ul id="eventsList" class="action-items"></ul>
                 <div id="confirmBar" class="confirm-bar" hidden>
                     <button type="submit" class="btn btn-primary">Add selected events</button>
@@ -80,7 +80,7 @@
                                 <#if action.subject?has_content>
                                     <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
                                 <#elseif action.photoImport>
-                                    <p class="action-source">From a photo you uploaded</p>
+                                    <p class="action-source">From a file you uploaded</p>
                                 <#else>
                                     <p class="action-source">From your calendar</p>
                                 </#if>
@@ -107,7 +107,7 @@
                                 <#if action.subject?has_content>
                                     <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
                                 <#elseif action.photoImport>
-                                    <p class="action-source">From a photo you uploaded</p>
+                                    <p class="action-source">From a file you uploaded</p>
                                 <#else>
                                     <p class="action-source">From your calendar</p>
                                 </#if>
@@ -172,14 +172,14 @@
                 Choose a file
             </button>
         </div>
-        <button type="button" id="fabButton" class="fab" aria-haspopup="true" aria-expanded="false" aria-label="Import events from a photo">
+        <button type="button" id="fabButton" class="fab" aria-haspopup="true" aria-expanded="false" aria-label="Import events from a photo or file">
             <svg id="fabIcon" width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
             </svg>
         </button>
     </div>
     <input type="file" id="cameraInput" name="photo" accept="image/*" capture="environment" hidden>
-    <input type="file" id="libraryInput" name="photo" accept="image/*" hidden>
+    <input type="file" id="libraryInput" name="photo" accept="image/*,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" hidden>
 
     <script src="/app.js"></script>
 </body>

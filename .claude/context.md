@@ -327,6 +327,27 @@ extraction) is just its optional `error` field on an otherwise-200 response,
 not a non-2xx status, so `app.js` doesn't need a separate branch per failure
 mode.
 
+**"Choose a file" also accepts a PDF or Word (.docx) document, not just an
+image** - the FAB's label was already generic ("Choose a file", not "Choose
+a photo") when this was added, so no UI copy needed to change there, just
+`libraryInput`'s `accept` list (`inbox.ftl`) and the extract route's
+handling. A PDF goes through the exact same `inlineData`
+(`extractCalendarEventsFromImage`) path as a photo - Gemini reads PDF pages
+the same way it reads an image, so the route just forwards whatever
+`mimeType` the upload actually was, no PDF-specific branch needed. A `.docx`
+is different: Gemini's `generateContent` has no `inlineData` mimetype for
+Word documents, so `InboxRoutes.kt`'s `extractDocxText` pulls the plain text
+out locally first (Apache POI's `XWPFDocument`/`XWPFWordExtractor`) and
+sends it through a new `GeminiClient.extractCalendarEventsFromText` method
+instead - a second text part appended after the same prompt used for the
+image/PDF path, no `inlineData` at all, same shape as the plain-text email
+`extract()` call. Anything else uploaded (mimeType not `image/*`,
+`application/pdf`, or the docx OOXML mimetype) is rejected before it ever
+reaches Gemini, with the same "Choose a photo, PDF, or Word document to
+upload." error as an empty upload. Legacy binary `.doc` isn't supported
+(POI's docx reader can't open it, and it wasn't asked for) - only modern
+`.docx`.
+
 **Resolves the "how much human review" open question, for this one path
 only**: unlike the Calendar API pull (structured fields straight from
 Google's own data, no review needed) or email extraction (already shown

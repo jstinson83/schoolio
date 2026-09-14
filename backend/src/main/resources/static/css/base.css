@@ -648,7 +648,7 @@ h1, h2, h3 {
 /* Staging card - a progress indicator (with a cancel) while a just-picked
    photo is being read, shown from the moment a file is chosen via the FAB
    until that extraction resolves (see app.js's import-photo block). */
-.staging-card {
+.staging-card:not([hidden]) {
     display: flex;
     align-items: center;
     gap: 0.75rem;

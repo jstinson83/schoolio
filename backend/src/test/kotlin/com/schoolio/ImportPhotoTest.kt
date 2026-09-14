@@ -7,6 +7,8 @@ import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import org.apache.poi.xwpf.usermodel.XWPFDocument
+import java.io.ByteArrayOutputStream
 import kotlin.test.*
 
 // The photo-import feature doesn't need Gmail connected at all (unlike most
@@ -75,6 +77,78 @@ class ImportPhotoTest {
     }
 
     @Test
+    fun testExtractingAPdfGoesThroughTheSameInlineDataPathAsAPhoto() = testApplication {
+        val geminiClient = FakeGeminiClient()
+        testModule(geminiClient = geminiClient)
+        val client = signInFakeUser()
+
+        val response = client.submitFormWithBinaryData(
+            "/inbox/import-photo/extract",
+            fakePhotoFormData(fileName = "schedule.pdf", contentType = "application/pdf", bytes = byteArrayOf(1, 2, 3, 4, 5))
+        )
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertNull(body.error)
+        assertEquals(5, geminiClient.lastImageBytesSize)
+        assertEquals("application/pdf", geminiClient.lastImageMimeType)
+        assertNull(geminiClient.lastDocumentText)
+    }
+
+    @Test
+    fun testExtractingAWordDocumentSendsItsExtractedTextToGeminiAsPlainText() = testApplication {
+        val geminiClient = FakeGeminiClient(
+            photoEvents = listOf(ExtractedCalendarEvent(title = "Spirit week", date = "2026-10-13"))
+        )
+        testModule(geminiClient = geminiClient)
+        val client = signInFakeUser()
+
+        // A real .docx, not a hand-rolled fake - proves InboxRoutes' extractDocxText
+        // actually reads it via Apache POI rather than just forwarding raw bytes.
+        val docxBytes = ByteArrayOutputStream().use { out ->
+            XWPFDocument().use { doc ->
+                doc.createParagraph().createRun().setText("Oct 13-17: Spirit week")
+                doc.write(out)
+            }
+            out.toByteArray()
+        }
+
+        val response = client.submitFormWithBinaryData(
+            "/inbox/import-photo/extract",
+            fakePhotoFormData(
+                fileName = "schedule.docx",
+                contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                bytes = docxBytes
+            )
+        )
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertNull(body.error)
+        assertEquals("Spirit week", body.events[0].title)
+        assertNull(geminiClient.lastImageBytesSize)
+        assertNotNull(geminiClient.lastDocumentText)
+        assertTrue(geminiClient.lastDocumentText!!.contains("Oct 13-17: Spirit week"))
+    }
+
+    @Test
+    fun testUnsupportedFileTypeReturnsAnErrorInsteadOfCallingGemini() = testApplication {
+        val geminiClient = FakeGeminiClient()
+        testModule(geminiClient = geminiClient)
+        val client = signInFakeUser()
+
+        val response = client.submitFormWithBinaryData(
+            "/inbox/import-photo/extract",
+            fakePhotoFormData(fileName = "notes.txt", contentType = "text/plain", bytes = byteArrayOf(1, 2, 3))
+        )
+
+        val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
+        assertEquals("Choose a photo, PDF, or Word document to upload.", body.error)
+        assertNull(geminiClient.lastImageBytesSize)
+        assertNull(geminiClient.lastDocumentText)
+    }
+
+    @Test
     fun testNoFileSelectedReturnsAnErrorInsteadOfCallingGemini() = testApplication {
         val geminiClient = FakeGeminiClient()
         testModule(geminiClient = geminiClient)
@@ -82,7 +156,7 @@ class ImportPhotoTest {
 
         val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", emptyList())
         val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
-        assertEquals("Choose a photo to upload.", body.error)
+        assertEquals("Choose a photo, PDF, or Word document to upload.", body.error)
         assertTrue(body.events.isEmpty())
         assertNull(geminiClient.lastImageBytesSize)
     }
@@ -95,6 +169,9 @@ class ImportPhotoTest {
 
             override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> =
                 error("Gemini vision call failed")
+
+            override suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent> =
+                error("not used")
         }
         testModule(geminiClient = geminiClient)
         val client = signInFakeUser()
@@ -102,7 +179,7 @@ class ImportPhotoTest {
         val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", fakePhotoFormData())
         assertEquals(HttpStatusCode.OK, response.status)
         val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
-        assertEquals("Couldn't read that photo - try a clearer picture.", body.error)
+        assertEquals("Couldn't read that file - try again.", body.error)
     }
 
     @Test
@@ -113,7 +190,7 @@ class ImportPhotoTest {
 
         val response = client.submitFormWithBinaryData("/inbox/import-photo/extract", fakePhotoFormData())
         val body = Json.decodeFromString<PhotoExtractionResponse>(response.bodyAsText())
-        assertEquals("No events found in that photo.", body.error)
+        assertEquals("No events found in that file.", body.error)
     }
 
     @Test
@@ -155,7 +232,7 @@ class ImportPhotoTest {
 
         val inboxBody = client.get("/inbox").bodyAsText()
         assertTrue(inboxBody.contains("Picture day"))
-        assertTrue(inboxBody.contains("From a photo you uploaded"))
+        assertTrue(inboxBody.contains("From a file you uploaded"))
         assertFalse(inboxBody.contains("Field trip"))
     }
 
