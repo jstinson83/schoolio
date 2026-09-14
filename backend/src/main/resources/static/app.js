@@ -93,18 +93,20 @@ if ('serviceWorker' in navigator) {
 // Photo-import FAB on the main inbox page (inbox.ftl) - lives right on
 // /inbox rather than a separate page, since there's no reason to navigate
 // away just to add a photo. It's a speed dial (a "+" that expands into
-// "Take a photo" / "Choose a file") rather than opening a picker
-// picker directly, since a single hidden input with both `capture` and a
-// plain gallery pick isn't reliably offered as a choice across mobile
-// browsers - two separate inputs (one with `capture="environment"`, one
-// without) makes the choice explicit instead of leaving it to whatever a
-// given browser happens to default to. Each photo's
-// POST /inbox/import-photo/extract response is appended into #eventsList in
-// place, so several photos build up one review batch before the confirm
-// form at the bottom is ever submitted (see InboxRoutes.kt's doc comment on
-// that route for why it's fetch()-driven instead of a plain form post).
-// #confirmForm's own submit is a normal full-page POST, same as every other
-// form in this app - only the per-photo extraction step needs JS at all.
+// "Take a photo" / "Choose a file") rather than opening a picker directly,
+// since a single hidden input with both `capture` and a plain gallery pick
+// isn't reliably offered as a choice across mobile browsers - two separate
+// inputs (one with `capture="environment"`, one without) makes the choice
+// explicit instead of leaving it to whatever a given browser happens to
+// default to. Picking a photo (either input) extracts it immediately - no
+// separate "Extract events" click, since there's nothing to configure
+// first - and each photo's POST /inbox/import-photo/extract response is
+// appended into #eventsList in place, so several photos build up one
+// review batch before the confirm form at the bottom is ever submitted
+// (see InboxRoutes.kt's doc comment on that route for why it's
+// fetch()-driven instead of a plain form post). #confirmForm's own submit
+// is a normal full-page POST, same as every other form in this app - only
+// the per-photo extraction step needs JS at all.
 (function () {
   const fabButton = document.getElementById('fabButton');
   if (!fabButton) return;
@@ -119,7 +121,6 @@ if ('serviceWorker' in navigator) {
   const stagingName = document.getElementById('stagingName');
   const stagingStatus = document.getElementById('stagingStatus');
   const stagingCancel = document.getElementById('stagingCancel');
-  const extractBtn = document.getElementById('extractBtn');
   const importError = document.getElementById('importError');
   const photoReviewSection = document.getElementById('photoReviewSection');
   const eventsList = document.getElementById('eventsList');
@@ -224,41 +225,44 @@ if ('serviceWorker' in navigator) {
     libraryInput.click();
   });
 
-  function onFileChosen(file) {
-    if (!file) return;
-    currentFile = file;
-    importError.hidden = true;
-    stagingName.textContent = file.name || 'calendar-photo.jpg';
-    stagingStatus.textContent = 'Ready to extract';
-    extractBtn.disabled = false;
-    extractBtn.textContent = 'Extract events';
-    stagingCard.hidden = false;
-    stagingCard.scrollIntoView({ block: 'nearest' });
-  }
-
-  cameraInput.addEventListener('change', () => onFileChosen(cameraInput.files && cameraInput.files[0]));
-  libraryInput.addEventListener('change', () => onFileChosen(libraryInput.files && libraryInput.files[0]));
+  // Set only while a fetch is actually in flight - lets stagingCancel tell
+  // "abort the request" apart from "just dismiss the card" (nothing to abort
+  // once it's already resolved).
+  let currentAbortController = null;
 
   function resetStaging() {
     currentFile = null;
+    currentAbortController = null;
     cameraInput.value = '';
     libraryInput.value = '';
     stagingCard.hidden = true;
   }
 
-  stagingCancel.addEventListener('click', resetStaging);
-
-  extractBtn.addEventListener('click', async () => {
-    if (!currentFile) return;
-    extractBtn.disabled = true;
-    extractBtn.textContent = 'Extracting…';
-    stagingStatus.textContent = 'Reading the photo…';
+  // No separate "Extract events" step - picking a photo (via either input)
+  // starts the extraction immediately, since there's nothing for a household
+  // member to configure first; the staging card here is purely a progress
+  // indicator (with a cancel) while Gemini reads the photo, not a
+  // confirm-before-you-start prompt.
+  async function onFileChosen(file) {
+    if (!file) return;
+    currentFile = file;
     importError.hidden = true;
+    stagingName.textContent = file.name || 'calendar-photo.jpg';
+    stagingStatus.textContent = 'Reading the photo…';
+    stagingCard.hidden = false;
+    stagingCard.scrollIntoView({ block: 'nearest' });
+
+    const abortController = new AbortController();
+    currentAbortController = abortController;
 
     try {
       const formData = new FormData();
-      formData.append('photo', currentFile);
-      const res = await fetch('/inbox/import-photo/extract', { method: 'POST', body: formData });
+      formData.append('photo', file);
+      const res = await fetch('/inbox/import-photo/extract', {
+        method: 'POST',
+        body: formData,
+        signal: abortController.signal
+      });
       const data = await res.json();
       if (data.error) {
         showError(data.error);
@@ -267,10 +271,23 @@ if ('serviceWorker' in navigator) {
         updateChrome();
       }
     } catch (e) {
-      showError("Couldn't reach the server - check your connection and try again.");
+      // A user-initiated abort (stagingCancel below) throws the same way a
+      // real network failure would - only show the error banner for the
+      // latter, since the former is an intentional "never mind."
+      if (e.name !== 'AbortError') {
+        showError("Couldn't reach the server - check your connection and try again.");
+      }
     } finally {
       resetStaging();
     }
+  }
+
+  cameraInput.addEventListener('change', () => onFileChosen(cameraInput.files && cameraInput.files[0]));
+  libraryInput.addEventListener('change', () => onFileChosen(libraryInput.files && libraryInput.files[0]));
+
+  stagingCancel.addEventListener('click', () => {
+    if (currentAbortController) currentAbortController.abort();
+    resetStaging();
   });
 
   updateChrome();

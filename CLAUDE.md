@@ -243,3 +243,17 @@ hit the same way.
   this isn't a bug in the app, just a mismatch between "what a browser
   shows" and "what's literally in the HTML text" that a naive `contains()`
   check doesn't account for.
+- **A bare `.some-class { display: flex; ... }` rule permanently defeats
+  that same element's `hidden` attribute - the browser's own default
+  `[hidden] { display: none }` rule loses to *any* author stylesheet rule
+  at equal specificity, regardless of selector, because origin (user-agent
+  vs. author) outranks specificity in the cascade.** Hit for real on the
+  photo-import FAB's speed-dial menu (`#fabMenu.fab-menu`, `inbox.ftl`) -
+  `.fab-menu` was declared as a bare `{ display: flex; ... }` rule, so
+  toggling the element's `hidden` attribute via `app.js` did nothing
+  visible; the menu rendered permanently open. Fixed by scoping the
+  layout rule to `.fab-menu:not([hidden])` instead (`base.css`) - same
+  pattern `nav.ftl`'s own mobile menu already used correctly
+  (`.app-nav-menu:not([hidden])`), just not yet applied here. If a future
+  element's `[hidden]` toggle appears to do nothing, check for exactly
+  this shape before assuming the JS is broken.

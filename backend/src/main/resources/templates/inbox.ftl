@@ -24,11 +24,10 @@
             </div>
             <div class="staging-info">
                 <div id="stagingName" class="staging-name"></div>
-                <div id="stagingStatus" class="staging-status">Ready to extract</div>
+                <div id="stagingStatus" class="staging-status">Reading the photo&hellip;</div>
             </div>
             <div class="staging-actions">
-                <button type="button" id="stagingCancel" class="btn btn-ghost" aria-label="Remove photo">&#x2715;</button>
-                <button type="button" id="extractBtn" class="btn btn-primary">Extract events</button>
+                <button type="button" id="stagingCancel" class="btn btn-ghost" aria-label="Cancel">&#x2715;</button>
             </div>
         </div>
 
