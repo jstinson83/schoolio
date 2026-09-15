@@ -7,6 +7,7 @@ import io.ktor.http.*
 import io.ktor.server.testing.*
 import java.time.Instant
 import kotlin.test.*
+import kotlinx.coroutines.runBlocking
 
 class InboxTest {
     @Test
@@ -102,6 +103,63 @@ class InboxTest {
         awaitCondition("Second pull never ran") { gmailClient.searchCallCount >= 2 }
         awaitMessagesProcessed(messageStore)
         assertEquals(1, geminiClient.extractedSubjects.size, "Re-pulling an already-processed message shouldn't re-run Gemini on it")
+    }
+
+    // The maintainer's household-sharing dedup discussion, idea #1: the
+    // school sends the same email straight to both parents' addresses, so
+    // each mailbox pulls it under its own Message-ID - id-based dedup alone
+    // (the test above) never sees these as the same message. storeIfAbsent's
+    // contentHash check (see MessageStore.kt's emailContentHash) is what
+    // catches it instead, exercised here directly at the repository level
+    // since that's exactly what pullAndStoreNewMessages calls per fetched
+    // message, regardless of which mailbox it came from.
+    @Test
+    fun testSameEmailContentFromTwoDifferentMailboxesIsStoredOnlyOnce() = runBlocking {
+        val messageStore = FakeMessageRepository()
+        val fromMailboxA = EmailMessage(
+            id = "mailbox-a-msg-1",
+            subject = "Field day forms due Friday",
+            from = "school@example.com",
+            date = "Mon, 1 Sep 2026 10:00:00 -0400",
+            receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+            bodyText = "Please return the signed form by Friday."
+        )
+        // A second, later delivery to the other mailbox: different id and
+        // receivedAt (as any two separate deliveries would have), identical
+        // from/subject/body.
+        val fromMailboxB = fromMailboxA.copy(id = "mailbox-b-msg-1", receivedAt = Instant.parse("2026-09-01T14:05:00Z"))
+
+        messageStore.storeIfAbsent(fromMailboxA)
+        messageStore.storeIfAbsent(fromMailboxB)
+
+        assertEquals(listOf(fromMailboxA), messageStore.getAll())
+    }
+
+    // The flip side of the test above - dedup is exact-content-match only,
+    // not fuzzy (see emailContentHash's doc comment on why a forward or a
+    // differently-worded email about the same event deliberately isn't
+    // caught here).
+    @Test
+    fun testDifferentEmailBodiesFromTheSameSenderAndSubjectAreBothStored() = runBlocking {
+        val messageStore = FakeMessageRepository()
+        val first = EmailMessage(
+            id = "1", subject = "Newsletter", from = TEST_SENDER,
+            date = "Mon, 1 Sep 2026 10:00:00 -0400", receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+            bodyText = "This week: field day."
+        )
+        // A fresh EmailMessage, not first.copy(bodyText = ...) - .copy()
+        // would carry first's contentHash forward unchanged (see that
+        // field's doc comment), defeating the point of this test.
+        val second = EmailMessage(
+            id = "2", subject = "Newsletter", from = TEST_SENDER,
+            date = "Mon, 1 Sep 2026 10:00:00 -0400", receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+            bodyText = "This week: picture day."
+        )
+
+        messageStore.storeIfAbsent(first)
+        messageStore.storeIfAbsent(second)
+
+        assertEquals(2, messageStore.getAll().size)
     }
 
     // A message Gemini fails on stays visible with a reason instead of

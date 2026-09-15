@@ -391,8 +391,26 @@ from neither pipeline.
   of inserting. The hard part is the matching itself — email/calendar don't
   share stable ids the way re-pulling the same message does, so it likely
   needs fuzzy matching (date + title/description overlap), maybe via
-  Gemini's judgment rather than string equality. Explicitly parked as one
-  shared design task, not to be solved piecemeal per source-pair.
+  Gemini's judgment rather than string equality.
+  - **Fuzzy matching itself (Gemini-judgment or date/title-overlap
+    heuristics) is deprioritized, likely won't-do**: raised when the
+    maintainer noticed neither household account had been tested
+    concurrently yet and asked what happens when both pull overlapping
+    events. For a two-person household at school-email volume, an
+    occasional undetected duplicate costs one manual dismiss — cheaper than
+    the false-merge risk fuzzy matching would introduce (two genuinely
+    different permission slips silently collapsed into one because they
+    landed on the same date). Revisit only if duplicates start showing up
+    often enough in practice to be annoying, not preemptively.
+  - **Exact-duplicate case is handled, narrower than the above**: the same
+    literal email landing in both mailboxes (a school sending directly to
+    both parents' addresses, most commonly) is now caught via content-hash
+    dedup — see "Message pull/processing pipeline" below
+    (`emailContentHash`/`EmailMessage.contentHash`). This is intentionally
+    exact-match only (from+subject+body, whitespace-normalized) — a
+    forwarded copy or a differently-worded email about the same event won't
+    match, which is correct: those are the harder fuzzy-matching case just
+    deprioritized above, not a gap in this fix.
 - Calendar target: push to Google Calendar directly, or maintain an
   in-app calendar with optional export/sync.
 - How much human review sits between AI extraction and calendar creation
@@ -417,6 +435,16 @@ as of the sync rework below, *both* phases run in the background:
   trip: fetch, then `MessageRepository.storeIfAbsent` each result as a raw
   `EmailMessage` (`MessageStore.kt`) with `status = PENDING`. Doc id is the
   Gmail Message-ID (sanitized only to strip a stray "/"), making a re-pull
+  of the same message from the *same* mailbox a no-op — but each household
+  account pulls its own mailbox with its own Message-IDs, so this alone
+  doesn't catch the school sending the identical email to both parents
+  directly. `storeIfAbsent` also checks `EmailMessage.contentHash`
+  (`emailContentHash`: SHA-256 over from+subject+whitespace-normalized body,
+  deliberately not date/receivedAt/id, which differ per mailbox by design) —
+  a second copy with a matching hash under a different id is skipped rather
+  than stored. Exact-match only, on purpose — see the cross-source
+  reconciliation open question above for why fuzzy matching across
+  differently-worded duplicates is deprioritized rather than attempted here.
   of an already-stored message a no-op rather than a double-store/reprocess
   — this is what makes it safe for `since` (below) to sometimes re-request
   messages already seen. No longer called synchronously from `GET /inbox` —

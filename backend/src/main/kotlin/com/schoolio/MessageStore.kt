@@ -3,10 +3,28 @@ package com.schoolio
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.Date
 
 enum class MessageStatus { PENDING, PROCESSED, FAILED }
+
+// Same real email landing in both household mailboxes separately (the school
+// sends to both parents' addresses directly, most commonly) is not caught by
+// id-based dedup below - two mailboxes assign the same message two different
+// Message-IDs. Hashed over from+subject+body only (not id/date/receivedAt,
+// which differ per mailbox by design) so two independent deliveries of the
+// literal same content collide; whitespace-only normalized, not a fuzzy
+// match - a forwarded copy (different From, "Fwd:" subject, added forward
+// headers) or a differently-worded email about the same event won't match,
+// deliberately (see context.md's cross-source reconciliation entry for why
+// that broader case is parked, not solved here).
+fun emailContentHash(from: String, subject: String, bodyText: String): String {
+    val normalizedBody = bodyText.lines().joinToString("\n") { it.trim() }.trim()
+    val normalized = listOf(from.trim(), subject.trim(), normalizedBody).joinToString("\u0001")
+    return MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+}
 
 // One raw pulled email, stored the moment it's fetched from Gmail -
 // independent of whether Gemini has processed it into a summary/action items
@@ -15,6 +33,9 @@ enum class MessageStatus { PENDING, PROCESSED, FAILED }
 // ScanSettings. id is the Gmail Message-ID - the natural dedup key that makes
 // an overlapping rescan (see ScanStateStore's per-sender watermark) safe to
 // re-pull without ever double-storing or double-processing the same message.
+// contentHash is the *cross-mailbox* dedup key (see emailContentHash above) -
+// defaulted from the other fields so existing call sites (tests included)
+// don't need to pass it explicitly.
 data class EmailMessage(
     val id: String,
     val subject: String,
@@ -29,7 +50,14 @@ data class EmailMessage(
     // ActionItem.dismissed, for a PROCESSED message with no action items at
     // all (inbox.ftl's "Other updates" section) - those messages have no
     // ActionItem of their own to carry a dismissed flag.
-    val dismissed: Boolean = false
+    val dismissed: Boolean = false,
+    // Defaulted from the other constructor params, so it's only ever
+    // recomputed when constructed directly - a data class .copy() carries
+    // the original instance's contentHash forward as-is even if the copy
+    // also changes from/subject/bodyText, same reason every real .copy()
+    // call site in this codebase only ever touches status/summary/dismissed/
+    // failureReason, never the content fields.
+    val contentHash: String = emailContentHash(from, subject, bodyText)
 )
 
 interface MessageRepository {
@@ -43,7 +71,10 @@ interface MessageRepository {
     // No-op if a message with this id is already stored - the dedupe guard
     // that makes it safe to re-pull messages already inside the search
     // window (see ScanStateStore's min-across-senders "since" computation)
-    // without resetting an already-PROCESSED message back to PENDING.
+    // without resetting an already-PROCESSED message back to PENDING. Also a
+    // no-op if a message with the same contentHash is already stored under a
+    // *different* id - catches the same email delivered separately to both
+    // household mailboxes (see emailContentHash's doc comment).
     suspend fun storeIfAbsent(message: EmailMessage)
     suspend fun markProcessed(id: String, summary: String)
     suspend fun markFailed(id: String, reason: String)
@@ -67,9 +98,14 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         val ref = collection.document(sanitizeMessageDocId(message.id))
         // Transactional read-then-write (not a plain get+set) so two
         // near-simultaneous scans racing on the same newly-arrived message
-        // can't both see "doesn't exist yet" and both write it.
+        // can't both see "doesn't exist yet" and both write it. The
+        // contentHash query catches the cross-mailbox case (same email, two
+        // Message-IDs) - a single-field equality query, no composite index
+        // needed.
         firestore.runTransaction { txn ->
             if (txn.get(ref).get().exists()) return@runTransaction
+            val hashMatch = txn.get(collection.whereEqualTo("contentHash", message.contentHash)).get()
+            if (!hashMatch.isEmpty) return@runTransaction
             txn.set(ref, messageToMap(message))
         }.get()
     }
@@ -94,18 +130,27 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         collection.document(sanitizeMessageDocId(id)).update("dismissed", false).get()
     }
 
-    private fun DocumentSnapshot.toEmailMessage(): EmailMessage = EmailMessage(
-        id = getString("messageId") ?: id,
-        subject = getString("subject") ?: "",
-        from = getString("from") ?: "",
-        date = getString("date") ?: "",
-        receivedAt = getDate("receivedAt")?.toInstant() ?: Instant.EPOCH,
-        bodyText = getString("bodyText") ?: "",
-        status = getString("status")?.let { runCatching { MessageStatus.valueOf(it) }.getOrNull() } ?: MessageStatus.PENDING,
-        summary = getString("summary"),
-        failureReason = getString("failureReason"),
-        dismissed = getBoolean("dismissed") ?: false
-    )
+    private fun DocumentSnapshot.toEmailMessage(): EmailMessage {
+        val from = getString("from") ?: ""
+        val subject = getString("subject") ?: ""
+        val bodyText = getString("bodyText") ?: ""
+        return EmailMessage(
+            id = getString("messageId") ?: id,
+            subject = subject,
+            from = from,
+            date = getString("date") ?: "",
+            receivedAt = getDate("receivedAt")?.toInstant() ?: Instant.EPOCH,
+            bodyText = bodyText,
+            status = getString("status")?.let { runCatching { MessageStatus.valueOf(it) }.getOrNull() } ?: MessageStatus.PENDING,
+            summary = getString("summary"),
+            failureReason = getString("failureReason"),
+            dismissed = getBoolean("dismissed") ?: false,
+            // A doc written before contentHash existed has no such field -
+            // fall back to computing it the same way a fresh write would, so
+            // an old doc still participates correctly in future dedup checks.
+            contentHash = getString("contentHash") ?: emailContentHash(from, subject, bodyText)
+        )
+    }
 
     private fun messageToMap(message: EmailMessage): Map<String, Any?> = mapOf(
         "messageId" to message.id,
@@ -117,7 +162,8 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         "status" to message.status.name,
         "summary" to message.summary,
         "failureReason" to message.failureReason,
-        "dismissed" to message.dismissed
+        "dismissed" to message.dismissed,
+        "contentHash" to message.contentHash
     )
 }
 

@@ -111,8 +111,8 @@ class FakeSettingsRepository(initial: ScanSettings = ScanSettings(listOf(TEST_SE
 }
 
 // In-memory stand-in for MessageStore.kt's Firestore implementation - a plain
-// map keyed by id gives storeIfAbsent's dedupe semantics for free via
-// putIfAbsent.
+// map keyed by id, plus an explicit contentHash scan mirroring the real
+// FirestoreMessageStore.storeIfAbsent's two checks (id, then contentHash).
 class FakeMessageRepository : MessageRepository {
     private val messages = mutableMapOf<String, EmailMessage>()
 
@@ -120,7 +120,9 @@ class FakeMessageRepository : MessageRepository {
     override suspend fun getPending(): List<EmailMessage> = messages.values.filter { it.status == MessageStatus.PENDING }
 
     override suspend fun storeIfAbsent(message: EmailMessage) {
-        messages.putIfAbsent(message.id, message)
+        if (messages.containsKey(message.id)) return
+        if (messages.values.any { it.contentHash == message.contentHash }) return
+        messages[message.id] = message
     }
 
     override suspend fun markProcessed(id: String, summary: String) {
