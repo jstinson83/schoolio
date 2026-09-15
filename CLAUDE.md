@@ -56,7 +56,7 @@ Cloud Build specifics, Firestore composite-index gotchas, Gemini
 prompt/response quirks) before re-deriving something Schoolio is likely to
 hit the same way.
 
-- **Firebase Hosting (the `schoolio.web.app`-style URL fronting Cloud Run)
+- **Firebase Hosting (the `getschoolio.web.app` URL fronting Cloud Run)
   strips every request cookie except one literally named `__session` before
   forwarding to Cloud Run** — same gotcha `foodie` hit first (see its
   `CLAUDE.md`'s "Reasonable URL (Firebase Hosting)" section for the full
@@ -71,10 +71,10 @@ hit the same way.
   since schoolio already has Google Sign-In (`Auth.kt`): once Hosting is
   live, `OAUTH_REDIRECT_BASE_URL` on Cloud Run must be updated to the
   Hosting URL (not left pointing at the raw `*.a.run.app` one), and
-  `https://schoolio.web.app/auth/google/callback` (or whatever the actual
-  Hosting site id ends up being) must be added to the OAuth 2.0 Client's
-  Authorized redirect URIs in Google Cloud Console — otherwise sign-in
-  either bounces back to the old domain (cookie lands on the wrong host) or
+  `https://getschoolio.web.app/auth/google/callback` must be added to the
+  OAuth 2.0 Client's Authorized redirect URIs in Google Cloud Console —
+  otherwise sign-in either bounces back to the old domain (cookie lands on
+  the wrong host) or
   Google rejects the callback outright with `redirect_uri_mismatch`.
 - **A Firestore date field read back through a raw `doc.get(field)`/
   `doc.data` map comes back as `com.google.cloud.Timestamp`, not

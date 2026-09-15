@@ -610,11 +610,11 @@ issuing one IMAP search covering every sender in that single window.
     `run.developer`, `iam.serviceAccountUser`) may already cover schoolio
     too, if it's the same service account — worth checking before
     re-granting anything.
-- **Public URL**: Firebase Hosting site `schoolio` (falls back to
-  `getschoolio` if that id is already taken globally — same collision
-  `foodie` hit, which is why it ended up as `getfoodie`) fronts the Cloud
-  Run service, giving `schoolio.web.app` (or `getschoolio.web.app`) instead
-  of the raw `schoolio-<hash>-nn.a.run.app` URL. Config: `firebase.json`
+- **Public URL**: Firebase Hosting site `getschoolio` (`schoolio` was
+  already taken globally — same collision `foodie` hit, which is why it
+  ended up as `getfoodie`) fronts the Cloud Run service, giving
+  `getschoolio.web.app` instead of the raw `schoolio-<hash>-nn.a.run.app`
+  URL. Config: `firebase.json`
   (`hosting.site`, catch-all rewrite to the `schoolio` Cloud Run service in
   `northamerica-northeast1`) + `.firebaserc` (pins to `foodie-503510`, the
   same shared GCP project) at repo root, plus a placeholder `public/` dir

@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "site": "schoolio",
+    "site": "getschoolio",
     "public": "public",
     "rewrites": [
       {
