@@ -1,0 +1,15 @@
+{
+  "hosting": {
+    "site": "getschoolio",
+    "public": "public",
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "schoolio",
+          "region": "northamerica-northeast1"
+        }
+      }
+    ]
+  }
+}

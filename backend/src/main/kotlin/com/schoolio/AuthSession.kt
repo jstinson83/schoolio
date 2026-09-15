@@ -28,7 +28,12 @@ private fun runningOnCloudRun(): Boolean = System.getenv("K_SERVICE") != null
 
 fun Application.installSessionCookie(sessionSecret: String) {
     install(Sessions) {
-        cookie<SessionData>("session") {
+        // Named "__session" (not "session") because Firebase Hosting strips
+        // every request cookie except one literally named "__session" before
+        // forwarding to Cloud Run - see CLAUDE.md's Firebase Hosting section.
+        // Any other name silently breaks sign-in the moment Hosting fronts
+        // this service, even though it still works hitting Cloud Run direct.
+        cookie<SessionData>("__session") {
             cookie.path = "/"
             cookie.httpOnly = true
             cookie.secure = runningOnCloudRun()
