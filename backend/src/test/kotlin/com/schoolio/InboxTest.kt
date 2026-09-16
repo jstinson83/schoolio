@@ -760,6 +760,53 @@ class InboxTest {
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
     }
 
+    // Only the household account that actually pulled a message from its own
+    // mailbox can open a Gmail deep link back to it (see EmailMessage.
+    // scannedByEmail's doc comment - the same email delivered to both
+    // parents gets a different Message-ID in each mailbox, and there's no
+    // account-agnostic Gmail URL) - GET /inbox must only render the "Open in
+    // Gmail" link for a message whose scannedByEmail matches whoever's
+    // actually signed in, never for one pulled by the other account.
+    @Test
+    fun testGmailLinkOnlyShowsForTheAccountThatScannedTheMessage() = testApplication {
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        messageStore.storeIfAbsent(
+            EmailMessage(
+                id = "<abc123@mail.gmail.com>",
+                subject = "Scanned by me",
+                from = "school@example.com",
+                date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                bodyText = "Nothing actionable here.",
+                status = MessageStatus.PROCESSED,
+                summary = "Just a newsletter.",
+                scannedByEmail = TEST_EMAIL
+            )
+        )
+        messageStore.storeIfAbsent(
+            EmailMessage(
+                id = "<def456@mail.gmail.com>",
+                subject = "Scanned by my spouse",
+                from = "school@example.com",
+                date = "Mon, 1 Sep 2026 11:00:00 -0400",
+                receivedAt = Instant.parse("2026-09-01T15:00:00Z"),
+                bodyText = "Nothing actionable here either.",
+                status = MessageStatus.PROCESSED,
+                summary = "Also just a newsletter.",
+                scannedByEmail = "spouse@example.com"
+            )
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), messageStore = messageStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("mail.google.com/mail/u/0/#search/rfc822msgid:abc123%40mail.gmail.com"))
+        assertFalse(body.contains("rfc822msgid:def456%40mail.gmail.com"))
+    }
+
     // Not prominent (see nav.ftl's nav-link-subtle), but always present so
     // dismissed items are never unreachable.
     @Test

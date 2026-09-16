@@ -506,6 +506,25 @@ another pull, turning "check once, then settle" into an infinite
 checking/reloading loop that never shows a fully-settled page. A user's
 very first pull this process lifetime always bypasses the cooldown.
 
+**Gmail deep links back to the original email (decided).** `EmailMessage`
+carries `scannedByEmail` (`MessageStore.kt`) — the household account whose
+mailbox `pullAndStoreNewMessages` fetched it from (`User.email`, threaded
+through as `EmailMessage.id`'s sibling field). `EmailMessage.gmailSearchLink()`
+builds `https://mail.google.com/mail/u/0/#search/rfc822msgid:<encoded id>`
+from the already-stored Message-ID — no new IMAP fetch (e.g. Gmail's
+`X-GM-MSGID` extension, which plain `jakarta.mail` doesn't expose anyway),
+just a pure function of data already captured. Gmail links are inherently
+account-scoped (no URL opens an email independent of which Google account is
+signed in), and per the cross-mailbox dedup note above, the same email
+delivered to both parents gets a *different* Message-ID in each mailbox — so
+`InboxRoutes.kt`'s `gmailLinkFor(currentUserEmail)` only renders the link
+when it matches the signed-in user's own `scannedByEmail`, never for a
+message pulled by the other account (rendered as "Open in Gmail" next to the
+action item / Other updates / Couldn't-process rows in `inbox.ftl` and
+`dismissed.ftl`). Blank `scannedByEmail` (any doc written before this field
+existed) means no link for anyone, rather than guessing which account it
+came from.
+
 **Action items are first-class** (`ActionItemStore.kt`), not nested inside
 the message: their own top-level `actionItems` Firestore collection, schema
 `(title, description, date, dismissed)`, with `sourceMessageId` linking back

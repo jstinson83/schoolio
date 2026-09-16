@@ -3,6 +3,7 @@ package com.schoolio
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Date
@@ -57,8 +58,33 @@ data class EmailMessage(
     // also changes from/subject/bodyText, same reason every real .copy()
     // call site in this codebase only ever touches status/summary/dismissed/
     // failureReason, never the content fields.
-    val contentHash: String = emailContentHash(from, subject, bodyText)
+    val contentHash: String = emailContentHash(from, subject, bodyText),
+    // Which household account's mailbox this was pulled from (User.email -
+    // see InboxRoutes.pullAndStoreNewMessages) - a Gmail deep link back to
+    // the original message (see gmailSearchLink below) only resolves for
+    // whoever's signed into *this* account, since the same email delivered
+    // to both parents' mailboxes gets a different Message-ID in each one
+    // (see emailContentHash's doc comment above) and Gmail has no
+    // account-agnostic message URL. Blank for any doc written before this
+    // field existed - InboxRoutes treats that the same as "don't show a
+    // link" rather than guessing which account it came from.
+    val scannedByEmail: String = ""
 )
+
+// Gmail's rfc822msgid: search operator matches the RFC822 Message-ID header
+// exactly, so this needs no extra IMAP fetch (e.g. the Gmail-specific
+// X-GM-MSGID extension, which plain jakarta.mail doesn't expose anyway) -
+// just the Message-ID already captured as EmailMessage.id (see
+// GmailClient.kt's toGmailMessage). Angle brackets are stripped before
+// encoding - rfc822msgid: matches the bare header value, not the
+// `<...>`-wrapped form the header is written in. Only ever meaningful when
+// opened while signed into scannedByEmail's own Gmail account (see that
+// field's doc comment) - callers (InboxRoutes) are responsible for only
+// showing this to the matching signed-in user, not for the account check
+// itself.
+fun EmailMessage.gmailSearchLink(): String =
+    "https://mail.google.com/mail/u/0/#search/rfc822msgid:" +
+        URLEncoder.encode(id.removePrefix("<").removeSuffix(">"), "UTF-8")
 
 interface MessageRepository {
     // Every stored message, most recent first - the inbox page's full list,
@@ -148,7 +174,8 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
             // A doc written before contentHash existed has no such field -
             // fall back to computing it the same way a fresh write would, so
             // an old doc still participates correctly in future dedup checks.
-            contentHash = getString("contentHash") ?: emailContentHash(from, subject, bodyText)
+            contentHash = getString("contentHash") ?: emailContentHash(from, subject, bodyText),
+            scannedByEmail = getString("scannedByEmail") ?: ""
         )
     }
 
@@ -163,7 +190,8 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         "summary" to message.summary,
         "failureReason" to message.failureReason,
         "dismissed" to message.dismissed,
-        "contentHash" to message.contentHash
+        "contentHash" to message.contentHash,
+        "scannedByEmail" to message.scannedByEmail
     )
 }
 

@@ -303,7 +303,7 @@ fun Route.inboxRoutes(
         // isToday) so inbox.ftl can render it as its own "Today" section
         // ahead of everything else, rather than just another date-group in
         // the chronological list.
-        val dateGroups = buildDateGroups(upcomingActionItems, messagesById, today)
+        val dateGroups = buildDateGroups(upcomingActionItems, messagesById, user.email, today)
         val todayGroup = dateGroups.firstOrNull { it["isToday"] == true }
         val upcomingGroups = dateGroups.filterNot { it["isToday"] == true }
         call.respond(
@@ -313,10 +313,14 @@ fun Route.inboxRoutes(
                     "syncing" to isSyncing(userId),
                     "todayGroup" to todayGroup,
                     "upcomingGroups" to upcomingGroups,
-                    "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
+                    "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById, user.email),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
-                    "noActionMessages" to processedWithNoActionItems.map { mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary) },
-                    "failedMessages" to failedMessages.map { mapOf("subject" to it.subject, "reason" to it.failureReason) },
+                    "noActionMessages" to processedWithNoActionItems.map {
+                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary, "gmailLink" to it.gmailLinkFor(user.email))
+                    },
+                    "failedMessages" to failedMessages.map {
+                        mapOf("subject" to it.subject, "reason" to it.failureReason, "gmailLink" to it.gmailLinkFor(user.email))
+                    },
                     "pendingCount" to pendingMessages.size
                 ) + navModel + call.currentUserModel()
             )
@@ -331,6 +335,8 @@ fun Route.inboxRoutes(
     // no urgency ordering to preserve here, and the date headings are still
     // useful context for "what was this."
     get("/inbox/dismissed") {
+        val userId = call.requireUserId()
+        val currentUserEmail = userStore.find(userId)?.email ?: ""
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
         val dismissedItems = actionItemStore.getAll().filter { it.dismissed }
@@ -339,8 +345,10 @@ fun Route.inboxRoutes(
             FreeMarkerContent(
                 "dismissed.ftl",
                 mapOf(
-                    "dateGroups" to buildDateGroups(dismissedItems, messagesById),
-                    "dismissedMessages" to dismissedMessages.map { mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary) },
+                    "dateGroups" to buildDateGroups(dismissedItems, messagesById, currentUserEmail),
+                    "dismissedMessages" to dismissedMessages.map {
+                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary, "gmailLink" to it.gmailLinkFor(currentUserEmail))
+                    },
                     "activeNav" to "dismissed"
                 ) + call.currentUserModel()
             )
@@ -693,7 +701,8 @@ private suspend fun pullAndStoreNewMessages(
                 from = message.from,
                 date = message.date,
                 receivedAt = message.receivedAt,
-                bodyText = message.bodyText
+                bodyText = message.bodyText,
+                scannedByEmail = email
             )
         )
     }
@@ -746,6 +755,17 @@ private val allDayDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").with
 
 private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
 
+// Only the household account whose own mailbox a message was pulled from can
+// actually open EmailMessage.gmailSearchLink() - see EmailMessage.
+// scannedByEmail's doc comment for why (a Gmail deep link is inherently
+// account-scoped, and the same email delivered to both parents gets a
+// different Message-ID in each mailbox). currentUserEmail is whichever
+// household account is signed in for *this* request - comparing
+// case-insensitively since email addresses aren't case-sensitive and Google
+// account emails in particular are commonly typed/stored in mixed case.
+private fun EmailMessage.gmailLinkFor(currentUserEmail: String): String? =
+    if (scannedByEmail.isNotBlank() && scannedByEmail.equals(currentUserEmail, ignoreCase = true)) gmailSearchLink() else null
+
 // ActionItem.date is already YYYY-MM-DD (optionally with a 'T'HH:MM suffix -
 // see ActionItemStore.kt's doc comment), so the first 10 characters are
 // always the grouping key when it's set. When it's null (the email stated no
@@ -793,7 +813,7 @@ private fun formatGroupHeading(dateKey: String): String =
 // anything about that split itself. Left null for /inbox/dismissed's own
 // call, where "today" has no special meaning - isToday just comes back
 // false for every group there.
-private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, today: String? = null): List<Map<String, Any?>> {
+private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String, today: String? = null): List<Map<String, Any?>> {
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
@@ -815,7 +835,8 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
                     "subject" to (dated.message?.subject ?: ""),
                     "from" to (dated.message?.from ?: ""),
                     "summary" to (dated.message?.summary ?: ""),
-                    "photoImport" to dated.item.sourcePhotoImport
+                    "photoImport" to dated.item.sourcePhotoImport,
+                    "gmailLink" to dated.message?.gmailLinkFor(currentUserEmail)
                 )
             }
         )
@@ -829,7 +850,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
 // -due first (a date string still sorts correctly as a string here, same
 // reasoning as buildDateGroups' sortedBy on the raw key) so the items
 // closest to becoming worth dismissing sit at the top.
-private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> =
+private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String): List<Map<String, Any?>> =
     actionItems.sortedByDescending { it.date }.map { item ->
         val message = item.sourceMessageId?.let { messagesById[it] }
         mapOf(
@@ -840,6 +861,7 @@ private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById
             "subject" to (message?.subject ?: ""),
             "from" to (message?.from ?: ""),
             "summary" to (message?.summary ?: ""),
-            "photoImport" to item.sourcePhotoImport
+            "photoImport" to item.sourcePhotoImport,
+            "gmailLink" to message?.gmailLinkFor(currentUserEmail)
         )
     }

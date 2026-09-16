@@ -79,7 +79,7 @@
                     </div>
                     <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                     <#if action.subject?has_content>
-                        <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                        <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if><#if action.gmailLink?has_content> &middot; <a href="${action.gmailLink}" target="_blank" rel="noopener">Open in Gmail</a></#if></p>
                     <#elseif action.photoImport>
                         <p class="action-source">From a file you uploaded</p>
                     <#else>
@@ -134,6 +134,7 @@
                             <li class="message">
                                 <div class="message-subject">${message.subject}</div>
                                 <#if message.summary?has_content><p class="message-summary">${message.summary}</p></#if>
+                                <#if message.gmailLink?has_content><p class="message-summary"><a href="${message.gmailLink}" target="_blank" rel="noopener">Open in Gmail</a></p></#if>
                                 <form method="post" action="/inbox/messages/${message.id}/dismiss" class="dismiss-form">
                                     <button type="submit" class="btn-dismiss">Dismiss</button>
                                 </form>
@@ -151,6 +152,7 @@
                             <li class="message">
                                 <div class="message-subject">${message.subject}</div>
                                 <p class="message-failed">Couldn't process this message<#if message.reason?has_content>: ${message.reason}</#if></p>
+                                <#if message.gmailLink?has_content><p class="message-summary"><a href="${message.gmailLink}" target="_blank" rel="noopener">Open in Gmail</a></p></#if>
                             </li>
                         </#list>
                     </ul>
