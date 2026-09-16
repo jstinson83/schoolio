@@ -75,6 +75,17 @@ interface ActionItemRepository {
     // when it's dismissed or restored.
     suspend fun dismiss(id: String)
     suspend fun restore(id: String)
+    // Looked up before a date edit (see InboxRoutes.kt's POST .../date) so
+    // that route can preserve any time-of-day already on the item - the edit
+    // form itself only ever submits a plain date, since editing the time
+    // isn't part of this feature.
+    suspend fun get(id: String): ActionItem?
+    // Overwrites just the date field. A calendar-sourced item's edit here
+    // will get clobbered again by the next calendar pull -
+    // upsertFromCalendar always refreshes date from Calendar (see its own
+    // doc comment) - same unresolved Calendar-vs-household-edit conflict as
+    // everywhere else that pipeline is the source of truth.
+    suspend fun updateDate(id: String, date: String)
 }
 
 class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRepository {
@@ -111,6 +122,15 @@ class FirestoreActionItemStore(private val firestore: Firestore) : ActionItemRep
 
     override suspend fun restore(id: String) {
         collection.document(id).update("dismissed", false).get()
+    }
+
+    override suspend fun get(id: String): ActionItem? {
+        val doc = collection.document(id).get().get()
+        return if (doc.exists()) doc.toActionItem() else null
+    }
+
+    override suspend fun updateDate(id: String, date: String) {
+        collection.document(id).update("date", date).get()
     }
 
     private fun DocumentSnapshot.toActionItem(): ActionItem = ActionItem(

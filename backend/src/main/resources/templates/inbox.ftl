@@ -74,7 +74,12 @@
                             <li class="action-item">
                                 <div class="action-item-main">
                                     <span class="action-title">${action.title}</span>
-                                    <#if action.date?has_content><span class="action-due">${action.date}</span></#if>
+                                    <#if action.date?has_content>
+                                        <button type="button" class="action-due" data-action="edit-date">${action.date}</button>
+                                        <form method="post" action="/inbox/action-items/${action.id}/date" class="date-edit-form" hidden>
+                                            <input type="date" name="date" value="${action.date?substring(0, 10)}" class="date-edit-input" aria-label="New date for ${action.title}">
+                                        </form>
+                                    </#if>
                                 </div>
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <#if action.subject?has_content>
@@ -101,7 +106,12 @@
                             <li class="action-item action-item-past">
                                 <div class="action-item-main">
                                     <span class="action-title">${action.title}</span>
-                                    <#if action.date?has_content><span class="action-due">${action.date}</span></#if>
+                                    <#if action.date?has_content>
+                                        <button type="button" class="action-due" data-action="edit-date">${action.date}</button>
+                                        <form method="post" action="/inbox/action-items/${action.id}/date" class="date-edit-form" hidden>
+                                            <input type="date" name="date" value="${action.date?substring(0, 10)}" class="date-edit-input" aria-label="New date for ${action.title}">
+                                        </form>
+                                    </#if>
                                 </div>
                                 <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
                                 <#if action.subject?has_content>

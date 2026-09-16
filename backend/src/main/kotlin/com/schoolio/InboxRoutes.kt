@@ -351,6 +351,25 @@ fun Route.inboxRoutes(
         call.respondRedirect("/inbox/dismissed")
     }
 
+    // Tap-the-date-pill inline edit (inbox.ftl/app.js) - the date pill itself
+    // is the control; tapping it swaps in a native date input in place, and
+    // picking a new date submits this form. A plain redirect back to /inbox
+    // (not a fetch+DOM patch) is deliberate here, same as dismiss/restore
+    // above - the item needs to regroup under its new date heading
+    // (buildDateGroups), which a full re-render already does for free. The
+    // edit input only ever offers a plain date, so any time-of-day already
+    // on the item (see ActionItem.date's doc comment) is read back off the
+    // stored item and reattached rather than trusting the client to resend it.
+    post("/inbox/action-items/{id}/date") {
+        val id = call.parameters["id"]
+        val newDate = call.receiveParameters()["date"]?.trim()
+        if (id != null && !newDate.isNullOrEmpty()) {
+            val existingTime = actionItemStore.get(id)?.date?.takeIf { it.length > 10 }?.drop(10)
+            actionItemStore.updateDate(id, newDate + existingTime.orEmpty())
+        }
+        call.respondRedirect("/inbox")
+    }
+
     // Same dismiss/restore shape as action items above, for an "Other
     // updates" message (see inbox.ftl) that has no ActionItem of its own to
     // carry the dismissed flag.

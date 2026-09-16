@@ -90,6 +90,53 @@ if ('serviceWorker' in navigator) {
   }, 3000);
 })();
 
+// Inline date editing on inbox action-item cards (inbox.ftl) - tapping the
+// .action-due pill swaps it for its sibling .date-edit-form's native date
+// input and opens the picker immediately, so picking a new date is the only
+// step; there's no separate confirm button, the input's own change event
+// submits the form. A plain full-page form submit (not fetch) is deliberate
+// - the item needs to regroup under its new date heading server-side (see
+// InboxRoutes.kt's POST .../date), which a normal reload already gives for
+// free. Blurring without picking a different date reverts to the pill
+// instead of submitting a no-op post.
+(function () {
+  const dateButtons = document.querySelectorAll('.action-due[data-action="edit-date"]');
+  if (dateButtons.length === 0) return;
+
+  dateButtons.forEach((button) => {
+    const form = button.nextElementSibling;
+    const input = form.querySelector('input[name="date"]');
+    const originalValue = input.value;
+
+    function openEditor() {
+      button.hidden = true;
+      form.hidden = false;
+      input.focus();
+      // Not every browser supports showPicker() (or allows it outside a
+      // direct user gesture) - focusing the input is still a usable fallback
+      // (it opens the native picker on its own in most mobile browsers).
+      if (input.showPicker) {
+        try { input.showPicker(); } catch (e) { /* unsupported here - focus() above still works */ }
+      }
+    }
+
+    function closeEditor() {
+      form.hidden = true;
+      button.hidden = false;
+    }
+
+    button.addEventListener('click', openEditor);
+
+    input.addEventListener('change', () => {
+      if (input.value && input.value !== originalValue) form.submit();
+    });
+
+    input.addEventListener('blur', () => {
+      if (input.value === originalValue) closeEditor();
+    });
+  });
+})();
+
 // Photo-import FAB on the main inbox page (inbox.ftl) - lives right on
 // /inbox rather than a separate page, since there's no reason to navigate
 // away just to add a photo. It's a speed dial (a "+" that expands into
