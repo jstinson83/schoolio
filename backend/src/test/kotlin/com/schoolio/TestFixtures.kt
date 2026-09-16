@@ -38,6 +38,8 @@ class FakeUserRepository : UserRepository {
 
     override suspend fun find(id: String): User? = usersById[id]
 
+    override suspend fun findByEmail(email: String): User? = usersById.values.find { it.email == email }
+
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
         usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
@@ -339,7 +341,11 @@ fun ApplicationTestBuilder.testModule(
     // InboxRoutes.kt's scheduleSync doc comment on why the cooldown exists
     // at all. Tests that specifically exercise a second real pull (re-pull
     // dedup, watermark advancement) pass 0 to bypass it.
-    inboxResyncCooldownMs: Long = 600_000L
+    inboxResyncCooldownMs: Long = 600_000L,
+    // Non-null default (unlike the real module()'s unset-means-401 default)
+    // so a test can hit POST /internal/sync successfully without every
+    // existing testModule() call needing to know about it.
+    internalSyncSecret: String? = "test-internal-sync-secret"
 ) {
     application {
         module(
@@ -358,7 +364,8 @@ fun ApplicationTestBuilder.testModule(
             scanStateStore = scanStateStore,
             inboxProcessDebounceMs = inboxProcessDebounceMs,
             inboxPullDebounceMs = inboxPullDebounceMs,
-            inboxResyncCooldownMs = inboxResyncCooldownMs
+            inboxResyncCooldownMs = inboxResyncCooldownMs,
+            internalSyncSecret = internalSyncSecret
         )
     }
 }

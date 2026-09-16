@@ -138,7 +138,11 @@ fun Application.module(
     // InboxRoutes.kt's doc comment on the default value.
     inboxProcessDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
     inboxPullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
-    inboxResyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS
+    inboxResyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS,
+    // Gates POST /internal/sync (InboxRoutes.kt) - no insecure dev fallback,
+    // see that route's doc comment for why. Unset locally is fine, it just
+    // means the route always 401s.
+    internalSyncSecret: String? = System.getenv("INTERNAL_SYNC_SECRET")
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
@@ -179,6 +183,14 @@ fun Application.module(
         }
 
         authRoutes(oauthClient, userStore, allowedEmails)
+
+        // Outside authenticate(USER_SESSION_PROVIDER_NAME) - this is called by
+        // Cloud Scheduler, not a signed-in browser, so it's gated by its own
+        // shared-secret header instead (see internalSyncRoutes' doc comment).
+        internalSyncRoutes(
+            userStore, gmailClient, geminiClient, calendarClient, settingsStore,
+            messageStore, actionItemStore, scanStateStore, allowedEmails, internalSyncSecret
+        )
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
             inboxRoutes(
