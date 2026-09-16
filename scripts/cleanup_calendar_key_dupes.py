@@ -52,6 +52,24 @@ from google.cloud import firestore
 COLLECTION = "actionItems"
 
 
+# DocumentSnapshot.get(field) is not dict.get() - it raises KeyError for a
+# field that's genuinely absent from the stored document (e.g. an ActionItem
+# doc written before sourceCalendarEventId existed as a field at all, not
+# just one stored as null), rather than returning None. Wrapping every doc
+# in to_dict() once up front sidesteps that everywhere below, with plain
+# dict.get() semantics for every field this script reads.
+class Doc:
+    __slots__ = ("id", "reference", "data")
+
+    def __init__(self, snapshot):
+        self.id = snapshot.id
+        self.reference = snapshot.reference
+        self.data = snapshot.to_dict() or {}
+
+    def get(self, key):
+        return self.data.get(key)
+
+
 def is_new_key(source_calendar_event_id: str) -> bool:
     return "@" in source_calendar_event_id
 
@@ -67,7 +85,7 @@ def main() -> int:
     args = parser.parse_args()
 
     db = firestore.Client(project=args.project, database=args.database)
-    docs = list(db.collection(COLLECTION).stream())
+    docs = [Doc(s) for s in db.collection(COLLECTION).stream()]
 
     calendar_docs = [d for d in docs if d.get("sourceCalendarEventId")]
     old_docs = [d for d in calendar_docs if not is_new_key(d.get("sourceCalendarEventId"))]
