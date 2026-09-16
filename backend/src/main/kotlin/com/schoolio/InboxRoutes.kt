@@ -345,7 +345,7 @@ fun Route.inboxRoutes(
             FreeMarkerContent(
                 "dismissed.ftl",
                 mapOf(
-                    "dateGroups" to buildDateGroups(dismissedItems, messagesById, currentUserEmail),
+                    "dateGroups" to buildDateGroups(dismissedItems, messagesById, currentUserEmail, descending = true),
                     "dismissedMessages" to dismissedMessages.map {
                         mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary, "gmailLink" to it.gmailLinkFor(currentUserEmail))
                     },
@@ -813,7 +813,12 @@ private fun formatGroupHeading(dateKey: String): String =
 // anything about that split itself. Left null for /inbox/dismissed's own
 // call, where "today" has no special meaning - isToday just comes back
 // false for every group there.
-private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String, today: String? = null): List<Map<String, Any?>> {
+// descending flips the date-heading order: /inbox wants soonest-upcoming
+// first (ascending, the default), while /inbox/dismissed wants reverse
+// chronological (most recent date first) - there's no urgency ordering to
+// preserve once something's dismissed, and the most recently-relevant date
+// is the more useful thing to see at the top of a review list.
+private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String, today: String? = null, descending: Boolean = false): List<Map<String, Any?>> {
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
@@ -821,7 +826,8 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
         val (dateKey, time) = item.dateKeyAndTime(message)
         Dated(dateKey, time, item, message)
     }
-    return dated.groupBy { it.dateKey }.entries.sortedBy { it.key }.map { (dateKey, entries) ->
+    val sortedEntries = dated.groupBy { it.dateKey }.entries.sortedBy { it.key }
+    return (if (descending) sortedEntries.reversed() else sortedEntries).map { (dateKey, entries) ->
         mapOf(
             "displayDate" to formatGroupHeading(dateKey),
             "isToday" to (dateKey == today),

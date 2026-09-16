@@ -708,6 +708,39 @@ class InboxTest {
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
     }
 
+    // /inbox groups upcoming action items soonest-date-first (ascending),
+    // since that's the urgency order that matters there - but once
+    // something's dismissed there's no urgency left to preserve, and the
+    // maintainer's ask is to see the most recently-relevant date group
+    // first instead. buildDateGroups' "descending" param (InboxRoutes.kt)
+    // is what flips this; this test would have failed before that param
+    // existed, when /inbox/dismissed reused buildDateGroups' ascending
+    // default and rendered its oldest date group first.
+    @Test
+    fun testDismissedPageListsDateGroupsInReverseChronologicalOrder() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(id = "item-old", sourceMessageId = "none", title = "Old field trip form", description = "Sign", date = "2020-01-01")
+        )
+        actionItemStore.items.add(
+            ActionItem(id = "item-new", sourceMessageId = "none", title = "Recent picture day form", description = "Sign", date = "2020-06-01")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        actionItemStore.dismiss("item-old")
+        actionItemStore.dismiss("item-new")
+
+        val body = client.get("/inbox/dismissed").bodyAsText()
+        val oldIndex = body.indexOf("Old field trip form")
+        val newIndex = body.indexOf("Recent picture day form")
+        assertTrue(oldIndex >= 0 && newIndex >= 0, "Both dismissed items should render")
+        assertTrue(newIndex < oldIndex, "More recently-dated dismissed item should render first")
+    }
+
     // Tap-the-date-pill inline edit (inbox.ftl/app.js) - POST .../date
     // updates just the date field and regroups the item under its new date
     // heading on the next render, same as any other action-item change here.
