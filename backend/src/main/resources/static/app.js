@@ -389,26 +389,38 @@ if ('serviceWorker' in navigator) {
       if (button.dataset.subscribed === 'true') {
         const existing = await registration.pushManager.getSubscription();
         if (existing) await existing.unsubscribe();
-        await fetch('/push/unsubscribe', { method: 'POST' });
+        const response = await fetch('/push/unsubscribe', { method: 'POST' });
+        // fetch() only rejects on a network failure, never on a non-2xx
+        // status - without this check, a failed server-side clear (session
+        // expired, a 500, ...) still flips the button to "disabled" even
+        // though the stored subscription is still sitting in Firestore, and
+        // the next reload (which reads the real server state) would show it
+        // "reset" back to enabled with no explanation.
+        if (!response.ok) throw new Error(`Unsubscribe failed: ${response.status}`);
         setSubscribed(false);
       } else {
         const subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
         });
-        await fetch('/push/subscribe', {
+        const response = await fetch('/push/subscribe', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(subscription.toJSON())
         });
+        if (!response.ok) throw new Error(`Subscribe failed: ${response.status}`);
         setSubscribed(true);
       }
     } catch (e) {
       // Most commonly a denied permission prompt (Notification.permission
-      // === 'denied') - browsers only ever show that prompt once per
-      // origin, so this can't be immediately retried from here; the
-      // fallback message points at the browser's own site settings instead.
-      showError("Couldn't enable notifications - check your browser's notification permission for this site.");
+      // === 'denied') on the subscribe path - browsers only ever show that
+      // prompt once per origin, so this can't be immediately retried from
+      // here; the message points at the browser's own site settings
+      // instead. A thrown "Subscribe/Unsubscribe failed" (see above) lands
+      // here too - either way, the button's state was deliberately left
+      // unchanged rather than guessed at, so it still matches what's
+      // actually stored server-side.
+      showError("Couldn't update notification settings - check your browser's notification permission for this site, or try again.");
     } finally {
       button.disabled = false;
     }

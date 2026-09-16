@@ -29,6 +29,36 @@ class PushNotificationTest {
         assertEquals(PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value"), stored)
     }
 
+    // Regression test: a real browser's PushSubscription.toJSON() includes
+    // an "expirationTime" field (usually null) that PushSubscriptionRequest
+    // doesn't declare - the server's ContentNegotiation originally rejected
+    // any unknown JSON key by default (kotlinx.serialization's own default),
+    // so every real subscribe call 400ed even though this handler never
+    // needed that field. Application.kt's install(ContentNegotiation) now
+    // sets ignoreUnknownKeys = true - this posts the literal shape a browser
+    // sends (raw JSON, not built from PushSubscriptionRequest, since that
+    // type doesn't have an expirationTime field to encode in the first
+    // place) to prove the real payload shape decodes.
+    @Test
+    fun testSubscribeAcceptsARealBrowserPayloadWithExtraFields() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+
+        val response = client.post("/push/subscribe") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"endpoint":"https://push.example.com/id","expirationTime":null,"keys":{"p256dh":"p256dh-value","auth":"auth-value"}}"""
+            )
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(
+            PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value"),
+            userStore.find(TEST_SUB)?.pushSubscription
+        )
+    }
+
     @Test
     fun testSubscribeRequiresSignIn() = testApplication {
         testModule()
