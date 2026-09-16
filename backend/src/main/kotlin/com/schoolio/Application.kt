@@ -134,15 +134,31 @@ fun Application.module(
     messageStore: MessageRepository = FirestoreMessageStore(firestoreClient),
     actionItemStore: ActionItemRepository = FirestoreActionItemStore(firestoreClient),
     scanStateStore: ScanStateRepository = FirestoreScanStateStore(firestoreClient),
+    notificationStateStore: NotificationStateRepository = FirestoreNotificationStateStore(firestoreClient),
     // Overridable only so tests don't have to sleep the real default - see
     // InboxRoutes.kt's doc comment on the default value.
     inboxProcessDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
     inboxPullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
     inboxResyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS,
-    // Gates POST /internal/sync (InboxRoutes.kt) - no insecure dev fallback,
-    // see that route's doc comment for why. Unset locally is fine, it just
-    // means the route always 401s.
-    internalSyncSecret: String? = System.getenv("INTERNAL_SYNC_SECRET")
+    // Gates POST /internal/sync and POST /internal/notify-daily
+    // (InboxRoutes.kt) - no insecure dev fallback, see internalSyncRoutes'
+    // doc comment for why. Unset locally is fine, it just means both routes
+    // always 401.
+    internalSyncSecret: String? = System.getenv("INTERNAL_SYNC_SECRET"),
+    // Web Push (WebPush.kt) - both null (notifications feature entirely
+    // off, same "not configured on this deployment" nullability as
+    // calendarClient) when VAPID keys haven't been generated/set yet.
+    vapidPublicKey: String? = System.getenv("VAPID_PUBLIC_KEY"),
+    vapidPrivateKey: String? = System.getenv("VAPID_PRIVATE_KEY"),
+    // No dev-insecure fallback needed the way sessionSecret has one - unlike
+    // a signing key, shipping a generic placeholder subject is harmless
+    // (it's just contact info a push service *may* use if this deployment's
+    // sends look abusive), so this only matters once real users are opted
+    // in. Should still be set to a real contact on a real deployment.
+    vapidSubject: String = System.getenv("VAPID_SUBJECT") ?: "mailto:admin@example.com",
+    webPushSender: WebPushSender? = if (vapidPublicKey != null && vapidPrivateKey != null) {
+        LibraryWebPushSender(vapidPublicKey, vapidPrivateKey, vapidSubject)
+    } else null
 ) {
     install(FreeMarker) {
         templateLoader = ClassTemplateLoader(this::class.java.classLoader, "templates")
@@ -191,12 +207,17 @@ fun Application.module(
             userStore, gmailClient, geminiClient, calendarClient, settingsStore,
             messageStore, actionItemStore, scanStateStore, allowedEmails, internalSyncSecret
         )
+        internalNotifyRoutes(
+            userStore, messageStore, actionItemStore, notificationStateStore,
+            webPushSender, allowedEmails, internalSyncSecret
+        )
 
         authenticate(USER_SESSION_PROVIDER_NAME) {
             inboxRoutes(
                 userStore, gmailClient, geminiClient, calendarClient, calendarServiceAccountEmail, settingsStore,
                 messageStore, actionItemStore, scanStateStore,
-                backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs
+                backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs,
+                vapidPublicKey
             )
         }
     }

@@ -45,6 +45,23 @@
         </section>
 
         <section class="settings-section">
+            <h2>Notifications</h2>
+            <#if vapidPublicKey?has_content>
+                <p id="notificationsUnsupported" class="field-hint" hidden>Push notifications aren't supported in this browser.
+                    On iOS, add Schoolio to your home screen first (Share &rarr; Add to Home Screen), then open it from
+                    there.</p>
+                <p>Get a once-daily notification in the morning, only on days something's due.</p>
+                <button type="button" id="notifyToggle" class="btn btn-primary" data-vapid-key="${vapidPublicKey}"
+                    data-subscribed="${hasPushSubscription?c}">
+                    <#if hasPushSubscription>Disable notifications<#else>Enable notifications</#if>
+                </button>
+                <p id="notifyError" class="field-hint" hidden></p>
+            <#else>
+                <p>Push notifications aren't configured on this deployment yet.</p>
+            </#if>
+        </section>
+
+        <section class="settings-section">
             <h2>School senders</h2>
             <form method="post" action="/inbox/settings" class="settings-form">
                 <label>

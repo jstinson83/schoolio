@@ -389,6 +389,80 @@ not "exactly one"), so `inbox.ftl`/`dismissed.ftl` can show "From a photo you
 uploaded" instead of misreporting "From your calendar" for an item that came
 from neither pipeline.
 
+## Periodic sync + push notifications (decided, code complete pending deploy)
+
+Two independent scheduled entry points, both outside
+`authenticate(USER_SESSION_PROVIDER_NAME)` and gated by the same
+`INTERNAL_SYNC_SECRET` shared-secret header instead of a user session (Cloud
+Scheduler has no session to authenticate with) - deliberately reusing one
+secret for both rather than minting a second one for a two-person app.
+
+- **`POST /internal/sync`** (`internalSyncRoutes`, `InboxRoutes.kt`) - runs
+  the Gmail pull + calendar pull + Gemini processing pipeline for *both*
+  `ALLOWED_EMAILS` accounts at once (unlike `GET /inbox`'s own
+  `scheduleSync`, which only ever runs for whoever's signed in and viewing
+  the page). No-ops per account when that account has no stored
+  `gmailAppPassword` yet, and no-ops the whole Gmail pull when no school
+  senders are configured - never treats "not set up yet" as an error. Live
+  on a Cloud Scheduler job hitting it every 15 minutes.
+- **`POST /internal/notify-daily`** (`internalNotifyRoutes`, `InboxRoutes.kt`)
+  - a *different* cadence/concern from the sync job above: once a day, at a
+  fixed morning time (not an interval), and only sends anything when
+  there's actually something due that day. Reuses the exact "what counts as
+  today" logic `/inbox`'s own Today/Upcoming split uses
+  (`ActionItem.dateKeyAndTime`), so the notification and the page it links
+  to always agree. A `notifications/daily` Firestore doc
+  (`NotificationStateStore.kt`) tracks the last date a digest actually went
+  out, guarding against sending the same day's digest twice if Cloud
+  Scheduler retries or double-fires - deliberately not written when there's
+  nothing to send, since that field means "a digest went out today," not
+  "we checked." Needs its own separate Cloud Scheduler job (a fixed time via
+  Scheduler's own `--time-zone`, so DST is handled for free) - not yet
+  created, see `.claude/current.md`.
+
+**Web Push (`WebPush.kt`)** - via `nl.martijndwars:web-push` (Maven), not a
+hand-rolled implementation. Web Push is a real client-side crypto protocol
+(RFC 8291 message encryption: ECDH + HKDF + AES-128-GCM; RFC 8292 VAPID: a
+signed JWT proving which server sent it) rather than a REST API with a JSON
+body to shape by hand, so it's the one integration in this app that pulls in
+a library instead of following the Gmail/Gemini/Calendar
+plain-`HttpClient`-no-SDK convention - see CLAUDE.md's gotcha entry for why
+that convention was judged not to apply here (an earlier hand-rolled pass
+existed briefly and was replaced once the risk of an unverifiable from-scratch
+crypto implementation became clear). Requires `BouncyCastleProvider`
+registered (`WebPush.kt` does this itself, lazily, once) and an explicit
+`org.bouncycastle:bcprov-jdk15on` dependency - the library's own POM marks
+that as optional, so Gradle won't pull it in on its own (see CLAUDE.md).
+
+- **Subscription**: `User.pushSubscription` (`endpoint`/`p256dh`/`auth`,
+  flattened from the browser's `PushSubscription.toJSON()`) - *not*
+  encrypted at rest the way `gmailAppPassword` is, since a leaked
+  subscription only lets someone push a notification to that one browser,
+  not read any of this app's data (a materially different, much lower-stakes
+  exposure). `POST /push/subscribe` / `POST /push/unsubscribe`
+  (authenticated, `InboxRoutes.kt`) just store/clear it - actually sending
+  happens later from `internalNotifyRoutes`, not from these routes. The
+  Settings page's "Enable notifications" button (`settings.ftl`/`app.js`)
+  triggers the browser's own permission prompt as a side effect of calling
+  `PushManager.subscribe()` - no separate `Notification.requestPermission()`
+  call.
+- **Delivery failure handling**: a 404/410 from the push service
+  (`PushSendResult.Gone`) means the subscription is permanently gone (PWA
+  uninstalled, site data cleared, browser revoked it) - `internalNotifyRoutes`
+  clears it from that account's `User` doc rather than leaving it to fail
+  the same way every future day.
+- **Notification content**: title "What's going on today", body a count
+  ("N things need your attention today"), landing on `/inbox` -
+  `sw.js`'s `notificationclick` handler focuses an already-open `/inbox` tab
+  if one exists rather than always opening a new one.
+- **Not yet verified against a live push service** - `internalNotifyRoutes`
+  and the crypto/JWT plumbing are unit-tested (with a fake sender standing
+  in for a real POST), but no real phone has actually received a push yet.
+  Treat "subscribe from an actual device, then manually fire the Scheduler
+  job once" as the real acceptance test before trusting this, same
+  "verify against something live, don't just trust the implementation"
+  lesson the Calendar/CalDAV entry already left in CLAUDE.md.
+
 ## Not yet decided / open questions
 
 - **Cross-source reconciliation (update vs. duplicate)**: realized this is
@@ -643,7 +717,13 @@ issuing one IMAP search covering every sender in that single window.
   (the full downloaded service-account JSON key content, not a file path —
   see "Calendar pull" above; absent entirely means Calendar access is off
   for that deployment, `calendarClient`/`calendarServiceAccountEmail` both
-  come out `null`, no crash).
+  come out `null`, no crash), `INTERNAL_SYNC_SECRET` (gates both
+  `POST /internal/sync` and `POST /internal/notify-daily` — see "Periodic
+  sync + push notifications" below; no dev-insecure fallback, unset means
+  both routes always 401), `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` /
+  `VAPID_SUBJECT` (Web Push — see below; the first two absent entirely means
+  notifications are off for that deployment, same nullable-and-quiet
+  pattern as Calendar).
 - **Firestore database**: created and confirmed working — real sign-in on
   the deployed Cloud Run service has round-tripped through
   `FirestoreUserStore` successfully. Database id/region weren't

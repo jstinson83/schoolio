@@ -30,6 +30,15 @@ data class User(
     // decrypts it back out, so nothing above the persistence layer needs to
     // know encryption is happening at all.
     val gmailAppPassword: String? = null,
+    // Set via POST /push/subscribe once a signed-in user opts into the daily
+    // digest notification (see WebPush.kt) - the browser's own
+    // PushSubscription.toJSON(), flattened. Not encrypted at rest the way
+    // gmailAppPassword is: unlike an IMAP credential, a leaked push
+    // subscription only lets someone send *this browser* a push
+    // notification, not read any of this app's data - a materially
+    // different, much lower-stakes exposure. Nullable since a user can be
+    // signed in without ever having opted in, same as gmailAppPassword.
+    val pushSubscription: PushSubscription? = null,
     // No calendarAppPassword field (there was one, briefly) - Calendar access
     // now goes through a single shared service account (GoogleCalendarApiClient,
     // see CalendarClient.kt) rather than a per-user credential at all. Google's
@@ -49,6 +58,13 @@ interface UserRepository {
     // look up each allowed account's stored gmailAppPassword by email instead.
     suspend fun findByEmail(email: String): User?
     suspend fun saveGmailAppPassword(id: String, appPassword: String)
+    suspend fun savePushSubscription(id: String, subscription: PushSubscription)
+    // Called when a push send comes back Gone (see WebPush.kt's
+    // PushSendResult) - the push service has permanently discarded this
+    // subscription, so holding onto it would just mean failing the same way
+    // every future send. Also how a signed-in user disables notifications
+    // themselves (POST /push/unsubscribe).
+    suspend fun clearPushSubscription(id: String)
 }
 
 // Uses ApiFuture.get() (blocking the calling thread inside a suspend fun),
@@ -95,6 +111,17 @@ class FirestoreUserStore(
         collection.document(id).update("gmailAppPassword", AppPasswordCipher.encrypt(appPassword, appPasswordEncryptionKey)).get()
     }
 
+    override suspend fun savePushSubscription(id: String, subscription: PushSubscription) {
+        collection.document(id).update(
+            "pushSubscription",
+            mapOf("endpoint" to subscription.endpoint, "p256dh" to subscription.p256dh, "auth" to subscription.auth)
+        ).get()
+    }
+
+    override suspend fun clearPushSubscription(id: String) {
+        collection.document(id).update("pushSubscription", null).get()
+    }
+
     private fun toUser(id: String, data: Map<String, Any?>): User = User(
         id = id,
         googleSub = data["googleSub"] as? String ?: id,
@@ -109,6 +136,12 @@ class FirestoreUserStore(
         // one bad field.
         gmailAppPassword = (data["gmailAppPassword"] as? String)?.let {
             runCatching { AppPasswordCipher.decrypt(it, appPasswordEncryptionKey) }.getOrNull()
+        },
+        pushSubscription = (data["pushSubscription"] as? Map<*, *>)?.let { raw ->
+            val endpoint = raw["endpoint"] as? String
+            val p256dh = raw["p256dh"] as? String
+            val auth = raw["auth"] as? String
+            if (endpoint != null && p256dh != null && auth != null) PushSubscription(endpoint, p256dh, auth) else null
         },
         createdAt = (data["createdAt"] as? Timestamp)?.let { Instant.ofEpochSecond(it.seconds, it.nanos.toLong()) }
     )

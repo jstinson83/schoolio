@@ -340,3 +340,77 @@ if ('serviceWorker' in navigator) {
 
   updateChrome();
 })();
+
+// Notifications toggle (settings.ftl) - opts a signed-in user into the
+// once-daily digest push (see WebPush.kt/InboxRoutes.kt's
+// internalNotifyRoutes). Subscribing is what actually triggers the
+// browser's own permission prompt (PushManager.subscribe()), not a separate
+// Notification.requestPermission() call - one user gesture covers both.
+(function () {
+  const button = document.getElementById('notifyToggle');
+  if (!button) return;
+
+  const unsupportedNotice = document.getElementById('notificationsUnsupported');
+  const errorNotice = document.getElementById('notifyError');
+  const vapidPublicKey = button.dataset.vapidKey;
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    button.hidden = true;
+    if (unsupportedNotice) unsupportedNotice.hidden = false;
+    return;
+  }
+
+  // PushManager.subscribe()'s applicationServerKey wants a Uint8Array, not
+  // the base64url string the server hands the template - standard
+  // conversion for this exact API, not specific to this app.
+  function urlBase64ToUint8Array(base64Url) {
+    const padding = '='.repeat((4 - (base64Url.length % 4)) % 4);
+    const base64 = (base64Url + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = window.atob(base64);
+    return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+  }
+
+  function showError(message) {
+    if (!errorNotice) return;
+    errorNotice.textContent = message;
+    errorNotice.hidden = false;
+  }
+
+  function setSubscribed(subscribed) {
+    button.dataset.subscribed = String(subscribed);
+    button.textContent = subscribed ? 'Disable notifications' : 'Enable notifications';
+  }
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    if (errorNotice) errorNotice.hidden = true;
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      if (button.dataset.subscribed === 'true') {
+        const existing = await registration.pushManager.getSubscription();
+        if (existing) await existing.unsubscribe();
+        await fetch('/push/unsubscribe', { method: 'POST' });
+        setSubscribed(false);
+      } else {
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+        });
+        await fetch('/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(subscription.toJSON())
+        });
+        setSubscribed(true);
+      }
+    } catch (e) {
+      // Most commonly a denied permission prompt (Notification.permission
+      // === 'denied') - browsers only ever show that prompt once per
+      // origin, so this can't be immediately retried from here; the
+      // fallback message points at the browser's own site settings instead.
+      showError("Couldn't enable notifications - check your browser's notification permission for this site.");
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
