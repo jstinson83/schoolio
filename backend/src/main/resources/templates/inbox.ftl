@@ -66,66 +66,62 @@
                 </div>
             </#if>
 
-            <#list dateGroups as group>
-                <section class="date-group">
-                    <h2 class="date-heading">${group.displayDate}</h2>
+            <#macro actionItemCard action extraClass="">
+                <li class="action-item<#if extraClass?has_content> ${extraClass}</#if>">
+                    <div class="action-item-main">
+                        <span class="action-title">${action.title}</span>
+                        <#if action.date?has_content>
+                            <button type="button" class="action-due" data-action="edit-date">${action.date}</button>
+                            <form method="post" action="/inbox/action-items/${action.id}/date" class="date-edit-form" hidden>
+                                <input type="date" name="date" value="${action.date?substring(0, 10)}" class="date-edit-input" aria-label="New date for ${action.title}">
+                            </form>
+                        </#if>
+                    </div>
+                    <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
+                    <#if action.subject?has_content>
+                        <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
+                    <#elseif action.photoImport>
+                        <p class="action-source">From a file you uploaded</p>
+                    <#else>
+                        <p class="action-source">From your calendar</p>
+                    </#if>
+                    <form method="post" action="/inbox/action-items/${action.id}/dismiss" class="dismiss-form">
+                        <button type="submit" class="btn-dismiss">Dismiss</button>
+                    </form>
+                </li>
+            </#macro>
+
+            <#if todayGroup??>
+                <section class="today-section">
+                    <div class="today-heading-row">
+                        <h2 class="today-heading">Today</h2>
+                        <span class="today-count">${todayGroup.items?size}</span>
+                    </div>
                     <ul class="action-items">
-                        <#list group.items as action>
-                            <li class="action-item">
-                                <div class="action-item-main">
-                                    <span class="action-title">${action.title}</span>
-                                    <#if action.date?has_content>
-                                        <button type="button" class="action-due" data-action="edit-date">${action.date}</button>
-                                        <form method="post" action="/inbox/action-items/${action.id}/date" class="date-edit-form" hidden>
-                                            <input type="date" name="date" value="${action.date?substring(0, 10)}" class="date-edit-input" aria-label="New date for ${action.title}">
-                                        </form>
-                                    </#if>
-                                </div>
-                                <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
-                                <#if action.subject?has_content>
-                                    <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
-                                <#elseif action.photoImport>
-                                    <p class="action-source">From a file you uploaded</p>
-                                <#else>
-                                    <p class="action-source">From your calendar</p>
-                                </#if>
-                                <form method="post" action="/inbox/action-items/${action.id}/dismiss" class="dismiss-form">
-                                    <button type="submit" class="btn-dismiss">Dismiss</button>
-                                </form>
-                            </li>
-                        </#list>
+                        <#list todayGroup.items as action><@actionItemCard action=action /></#list>
                     </ul>
                 </section>
-            </#list>
+            </#if>
+
+            <#if upcomingGroups?size gt 0>
+                <section class="upcoming-section">
+                    <h2>Upcoming</h2>
+                    <#list upcomingGroups as group>
+                        <div class="date-subgroup">
+                            <div class="date-subheading">${group.displayDate}</div>
+                            <ul class="action-items">
+                                <#list group.items as action><@actionItemCard action=action /></#list>
+                            </ul>
+                        </div>
+                    </#list>
+                </section>
+            </#if>
 
             <#if pastActionItems?size gt 0>
                 <section class="past-events">
                     <h2>Past events</h2>
                     <ul class="action-items">
-                        <#list pastActionItems as action>
-                            <li class="action-item action-item-past">
-                                <div class="action-item-main">
-                                    <span class="action-title">${action.title}</span>
-                                    <#if action.date?has_content>
-                                        <button type="button" class="action-due" data-action="edit-date">${action.date}</button>
-                                        <form method="post" action="/inbox/action-items/${action.id}/date" class="date-edit-form" hidden>
-                                            <input type="date" name="date" value="${action.date?substring(0, 10)}" class="date-edit-input" aria-label="New date for ${action.title}">
-                                        </form>
-                                    </#if>
-                                </div>
-                                <#if action.description?has_content><p class="action-description">${action.description}</p></#if>
-                                <#if action.subject?has_content>
-                                    <p class="action-source">From "${action.subject}"<#if action.from?has_content> &middot; ${action.from}</#if><#if action.summary?has_content> &mdash; ${action.summary}</#if></p>
-                                <#elseif action.photoImport>
-                                    <p class="action-source">From a file you uploaded</p>
-                                <#else>
-                                    <p class="action-source">From your calendar</p>
-                                </#if>
-                                <form method="post" action="/inbox/action-items/${action.id}/dismiss" class="dismiss-form">
-                                    <button type="submit" class="btn-dismiss">Dismiss</button>
-                                </form>
-                            </li>
-                        </#list>
+                        <#list pastActionItems as action><@actionItemCard action=action extraClass="action-item-past" /></#list>
                     </ul>
                 </section>
             </#if>
@@ -161,7 +157,7 @@
                 </section>
             </#if>
 
-            <#if !syncing && dateGroups?size == 0 && pastActionItems?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
+            <#if !syncing && !todayGroup?? && upcomingGroups?size == 0 && pastActionItems?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
                 <p>No messages found.</p>
             </#if>
         </#if>

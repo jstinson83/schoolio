@@ -471,16 +471,69 @@ h1, h2, h3 {
     font-size: 0.8125rem;
 }
 
-.other-updates, .failed-messages, .past-events {
+.other-updates, .failed-messages, .past-events, .upcoming-section {
     margin-bottom: 1.5rem;
 }
 
-.other-updates h2, .failed-messages h2, .past-events h2 {
+.other-updates h2, .failed-messages h2, .past-events h2, .upcoming-section h2 {
     font-size: 1.05rem;
     color: var(--accent);
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.35rem;
     margin: 0 0 0.5rem;
+}
+
+/* Today gets a heavier rule than the plain 1px section-header border
+   everything else uses (see .upcoming-section h2 above) so it reads as the
+   page's lead section, not just another date group - see current.md's
+   "Today" design and CLAUDE.md's push-notification plan this feeds into. */
+.today-section {
+    margin-bottom: 1.5rem;
+}
+
+.today-heading-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.35rem;
+    margin: 0 0 0.6rem;
+}
+
+.today-heading {
+    font-size: 1.15rem;
+    color: var(--accent);
+}
+
+.today-count {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent);
+    padding: 0.08rem 0.45rem;
+    border-radius: 999px;
+}
+
+/* Individual days within "Upcoming" are demoted to small muted labels
+   (not full h2 date-headings, see .date-heading above) so they read as
+   detail inside one section rather than competing top-level headings. */
+.date-subgroup {
+    margin-bottom: 0.9rem;
+}
+
+.date-subgroup:last-child {
+    margin-bottom: 0;
+}
+
+.date-subheading {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 0.4rem;
 }
 
 /* Past events/dismissed items are no longer front-and-center to act on -
