@@ -8,25 +8,44 @@ Background: CalendarEvent.uid used to be Google Calendar API's per-calendar
 separate ActionItem per calendar (each keyed "calendar-<id>"). The fix
 switched to `iCalUID` (identical across every attendee's copy), keyed
 "calendar-<iCalUID>". That's a *different* document id than before, so it
-creates a new doc instead of updating the old one - the old "calendar-<id>"
-doc is now an orphan sitting next to the new, correct one.
+creates a new doc instead of updating the old one.
 
-This script finds those orphans and deletes them. It tells old-keyed docs
-apart from new-keyed ones by shape, not by tracking actual migrations:
-Google's `iCalUID` always contains "@" (e.g. "<token>@google.com"); the old
-per-calendar `id` never does. It only ever considers documents in the
-`actionItems` collection that have a `sourceCalendarEventId` set (i.e.
-calendar-derived items) - email- and photo-import-derived items are left
-untouched.
+IMPORTANT, and the reason the first version of this script only found one
+duplicate: pullAndStoreCalendarEvents only ever pulls a forward-looking
+window (CALENDAR_LOOKAHEAD_DAYS, currently 7 days), never backward. An
+event that's already in the past will *never* get a new iCalUID-keyed doc
+to replace its old one - there's nothing to pull it into. So most
+duplicates aren't "one old doc, one new doc" pairs at all - they're TWO
+OLD-keyed docs for the same event (one per parent's calendar, from before
+this fix even existed, back when CalendarEvent.uid was the per-calendar id
+and each parent's pull created its own copy). Those two will sit there
+forever; nothing about the iCalUID fix ever touches them on its own.
 
-Matching an old doc to its replacement is done on (title, date) - exact
-string equality, same fields ActionItemStore already stores. A match found
-for exactly one new-keyed doc is deleted; zero or multiple matches are left
-alone and reported, since guessing wrong here is a real data loss, not just
-a cosmetic dupe. If the old doc was dismissed and its replacement isn't,
-the replacement is marked dismissed too, carrying the household's decision
-forward - the same thing a normal pull would have done had the id not
-changed out from under it.
+So this script groups ALL calendar-derived ActionItems (old-keyed and
+new-keyed alike) by (title, date) and collapses each group with more than
+one doc down to a single survivor:
+  - If the group contains exactly one new-keyed (iCalUID, contains "@")
+    doc, that one survives - it's the one that'll stay in sync on every
+    future pull. Every other doc in the group (all old-keyed) is deleted.
+  - If the group has no new-keyed doc at all (the common past-event case
+    above), one old-keyed doc is kept arbitrarily-but-deterministically
+    (lowest document id) and the rest are deleted.
+  - If a group contains *more than one* new-keyed doc, it's left alone and
+    reported - that means two distinct real events happen to share a title
+    and date, and guessing which is "the duplicate" risks deleting a real
+    event, not a dupe.
+Any doc that was dismissed carries that forward onto the survivor if it
+isn't already dismissed there, same as a normal pull would have done had
+the id not changed out from under it.
+
+It only ever considers `actionItems` docs with `sourceCalendarEventId` set
+(calendar-derived) - email- and photo-import-derived items are untouched.
+Matching is exact string equality on (title, date), the same fields
+ActionItemStore already stores - if a title was hand-edited or a date
+recomputation bug (see CLAUDE.md's Eastern-time gotcha) makes an old doc's
+date disagree with its true current value, that pair won't group and won't
+be touched; it'll show up in the dry run's "singleton" count for you to
+check by hand.
 
 Usage (from Cloud Shell):
     gcloud config set project foodie-503510        # if not already
@@ -88,53 +107,51 @@ def main() -> int:
     docs = [Doc(s) for s in db.collection(COLLECTION).stream()]
 
     calendar_docs = [d for d in docs if d.get("sourceCalendarEventId")]
-    old_docs = [d for d in calendar_docs if not is_new_key(d.get("sourceCalendarEventId"))]
-    new_docs = [d for d in calendar_docs if is_new_key(d.get("sourceCalendarEventId"))]
+    old_count = sum(1 for d in calendar_docs if not is_new_key(d.get("sourceCalendarEventId")))
+    new_count = len(calendar_docs) - old_count
 
-    new_by_key = {}
-    for d in new_docs:
+    groups = {}
+    for d in calendar_docs:
         key = (d.get("title"), d.get("date"))
-        new_by_key.setdefault(key, []).append(d)
+        groups.setdefault(key, []).append(d)
 
-    to_delete = []  # (old_doc, new_doc)
-    skipped_no_match = []
-    skipped_ambiguous = []
+    singleton_count = sum(1 for members in groups.values() if len(members) == 1)
+    to_delete = []  # (deleted_doc, survivor_doc)
+    skipped_ambiguous = []  # (key, new_key_members) - more than one new-keyed doc in a group
 
-    for old in old_docs:
-        key = (old.get("title"), old.get("date"))
-        matches = new_by_key.get(key, [])
-        if len(matches) == 1:
-            to_delete.append((old, matches[0]))
-        elif len(matches) == 0:
-            skipped_no_match.append(old)
-        else:
-            skipped_ambiguous.append((old, matches))
+    for key, members in groups.items():
+        if len(members) == 1:
+            continue
+        new_members = [d for d in members if is_new_key(d.get("sourceCalendarEventId"))]
+        if len(new_members) > 1:
+            skipped_ambiguous.append((key, new_members))
+            continue
+        survivor = new_members[0] if new_members else min(members, key=lambda d: d.id)
+        for d in members:
+            if d.id != survivor.id:
+                to_delete.append((d, survivor))
 
     print(f"Found {len(calendar_docs)} calendar-derived action item(s): "
-          f"{len(old_docs)} under the old key, {len(new_docs)} under the new key.\n")
+          f"{old_count} under the old key, {new_count} under the new key.")
+    print(f"{singleton_count} title+date group(s) have exactly one doc - nothing to do there.\n")
 
     if to_delete:
-        print(f"Will delete {len(to_delete)} stale old-key duplicate(s):")
-        for old, new in to_delete:
-            carry_dismissed = old.get("dismissed") and not new.get("dismissed")
-            note = "  (will also mark the replacement dismissed)" if carry_dismissed else ""
-            print(f"  DELETE {old.id!r}  ->  superseded by {new.id!r}"
-                  f"  [{old.get('title')!r} / {old.get('date')}]{note}")
+        print(f"Will delete {len(to_delete)} duplicate(s):")
+        for dupe, survivor in to_delete:
+            carry_dismissed = dupe.get("dismissed") and not survivor.get("dismissed")
+            note = "  (will also mark the survivor dismissed)" if carry_dismissed else ""
+            print(f"  DELETE {dupe.id!r}  ->  kept {survivor.id!r}"
+                  f"  [{dupe.get('title')!r} / {dupe.get('date')}]{note}")
     else:
         print("No confidently-matched duplicates found.")
 
-    if skipped_no_match:
-        print(f"\n{len(skipped_no_match)} old-key item(s) have no matching new-key replacement yet "
-              f"(the fixed pull hasn't picked them up, or the event was cancelled) - left alone:")
-        for old in skipped_no_match:
-            print(f"  {old.id!r}  [{old.get('title')!r} / {old.get('date')}]")
-
     if skipped_ambiguous:
-        print(f"\n{len(skipped_ambiguous)} old-key item(s) matched more than one new-key doc - "
-              f"left alone, resolve manually:")
-        for old, matches in skipped_ambiguous:
-            match_ids = ", ".join(repr(m.id) for m in matches)
-            print(f"  {old.id!r}  [{old.get('title')!r} / {old.get('date')}]  matches: {match_ids}")
+        print(f"\n{len(skipped_ambiguous)} title+date group(s) have more than one new-keyed doc - "
+              f"left alone entirely, resolve manually (this usually means two distinct real events "
+              f"share a title and date, not a duplicate):")
+        for (title, date), new_members in skipped_ambiguous:
+            match_ids = ", ".join(repr(m.id) for m in new_members)
+            print(f"  [{title!r} / {date}]  new-keyed docs: {match_ids}")
 
     if not to_delete:
         return 0
@@ -149,11 +166,22 @@ def main() -> int:
             print("Aborted - nothing was deleted.")
             return 1
 
+    # A survivor can have more than one dupe pointing at it (a three-doc
+    # group collapsing to one, say) - a WriteBatch rejects a second write
+    # queued against the same document reference, so the dismissed-carry
+    # update is deduped by survivor id before the batch is built, separate
+    # from the one-delete-per-dupe loop below (each dupe is unique to its
+    # own group, so those never collide with each other).
+    survivors_needing_dismiss = {}
+    for dupe, survivor in to_delete:
+        if dupe.get("dismissed") and not survivor.get("dismissed"):
+            survivors_needing_dismiss[survivor.id] = survivor
+
     batch = db.batch()
-    for old, new in to_delete:
-        if old.get("dismissed") and not new.get("dismissed"):
-            batch.update(new.reference, {"dismissed": True})
-        batch.delete(old.reference)
+    for survivor in survivors_needing_dismiss.values():
+        batch.update(survivor.reference, {"dismissed": True})
+    for dupe, _ in to_delete:
+        batch.delete(dupe.reference)
     batch.commit()
     print(f"\nDeleted {len(to_delete)} document(s).")
     return 0
