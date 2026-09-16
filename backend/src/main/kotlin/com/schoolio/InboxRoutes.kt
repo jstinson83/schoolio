@@ -299,12 +299,20 @@ fun Route.inboxRoutes(
         }
         val failedMessages = messages.filter { it.status == MessageStatus.FAILED }
         val pendingMessages = messages.filter { it.status == MessageStatus.PENDING }
+        // Split out today's own group (at most one - see buildDateGroups'
+        // isToday) so inbox.ftl can render it as its own "Today" section
+        // ahead of everything else, rather than just another date-group in
+        // the chronological list.
+        val dateGroups = buildDateGroups(upcomingActionItems, messagesById, today)
+        val todayGroup = dateGroups.firstOrNull { it["isToday"] == true }
+        val upcomingGroups = dateGroups.filterNot { it["isToday"] == true }
         call.respond(
             FreeMarkerContent(
                 "inbox.ftl",
                 mapOf(
                     "syncing" to isSyncing(userId),
-                    "dateGroups" to buildDateGroups(upcomingActionItems, messagesById),
+                    "todayGroup" to todayGroup,
+                    "upcomingGroups" to upcomingGroups,
                     "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
                     "noActionMessages" to processedWithNoActionItems.map { mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary) },
@@ -778,7 +786,14 @@ private fun formatGroupHeading(dateKey: String): String =
 // CLAUDE.md/this task's nav rework). messagesById supplies each item's
 // source message for display context (subject/from/summary) and the
 // sent-date fallback.
-private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> {
+// today, when passed, flags whichever group's dateKey matches it via
+// "isToday" - lets the /inbox handler split that one group out for the
+// "Today" section (see current.md's design for emphasizing today's items
+// over the rest of the upcoming list) without this function needing to know
+// anything about that split itself. Left null for /inbox/dismissed's own
+// call, where "today" has no special meaning - isToday just comes back
+// false for every group there.
+private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, today: String? = null): List<Map<String, Any?>> {
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
@@ -789,6 +804,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
     return dated.groupBy { it.dateKey }.entries.sortedBy { it.key }.map { (dateKey, entries) ->
         mapOf(
             "displayDate" to formatGroupHeading(dateKey),
+            "isToday" to (dateKey == today),
             "items" to entries.map { dated ->
                 mapOf(
                     "id" to dated.item.id,
