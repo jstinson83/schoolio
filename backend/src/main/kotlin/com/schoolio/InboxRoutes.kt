@@ -825,7 +825,20 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
         mapOf(
             "displayDate" to formatGroupHeading(dateKey),
             "isToday" to (dateKey == today),
-            "items" to entries.map { dated ->
+            // Firestore's collection.get() (ActionItemStore.getAll) has no
+            // orderBy, so the order items arrive in isn't guaranteed stable
+            // across requests - without an explicit sort here, two
+            // near-duplicate items (see context.md's cross-source
+            // reconciliation note - a differently-worded email about the
+            // same event, or an email and a calendar pull both producing an
+            // item for it) could swap positions between page loads, making
+            // it impossible to reliably dismiss "the one I already decided
+            // was the duplicate" from the page. Sorting by title first also
+            // lands likely-duplicate titles next to each other, which is
+            // what actually makes them easy to compare and dismiss.
+            "items" to entries.sortedWith(
+                compareBy({ it.item.title.lowercase() }, { it.time ?: "" }, { it.item.id })
+            ).map { dated ->
                 mapOf(
                     "id" to dated.item.id,
                     "title" to dated.item.title,
@@ -849,9 +862,14 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
 // isn't useful the way it is for what's still upcoming. Sorted most-recently
 // -due first (a date string still sorts correctly as a string here, same
 // reasoning as buildDateGroups' sortedBy on the raw key) so the items
-// closest to becoming worth dismissing sit at the top.
+// closest to becoming worth dismissing sit at the top. title/id are
+// tiebreakers for items sharing a date - same "make Firestore's unordered
+// getAll() deterministic across page loads, and land likely-duplicate
+// titles next to each other" reasoning as buildDateGroups' own sort.
 private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String): List<Map<String, Any?>> =
-    actionItems.sortedByDescending { it.date }.map { item ->
+    actionItems.sortedWith(
+        compareByDescending<ActionItem> { it.date }.thenBy { it.title.lowercase() }.thenBy { it.id }
+    ).map { item ->
         val message = item.sourceMessageId?.let { messagesById[it] }
         mapOf(
             "id" to item.id,

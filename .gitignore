@@ -15,6 +15,10 @@ out/
 *.kotlin_module
 *.log
 
+# Python (scripts/)
+__pycache__/
+*.pyc
+
 # Mac
 .DS_Store
 
