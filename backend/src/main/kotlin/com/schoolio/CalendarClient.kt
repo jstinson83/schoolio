@@ -20,7 +20,10 @@ import java.time.OffsetDateTime
 // pullAndStoreCalendarEvents needs this to decide whether ActionItem.date
 // gets a time component, rather than fabricating a fake midnight time for an
 // event that never had one. end is nullable since a bare event technically
-// only requires a start.
+// only requires a start. uid is the API's iCalUID, not its per-calendar id
+// (see CalendarApiEvent.iCalUID) - deliberate, so the same invite pulled off
+// both household members' calendars upserts onto one ActionItem instead of
+// creating a duplicate.
 data class CalendarEvent(val uid: String, val summary: String, val description: String?, val start: Instant, val allDay: Boolean, val end: Instant?)
 
 interface CalendarClient {
@@ -109,6 +112,17 @@ private data class EventsListResponse(val items: List<CalendarApiEvent> = emptyL
 @Serializable
 private data class CalendarApiEvent(
     val id: String,
+    // Google Calendar API's iCalUID (RFC5545 UID) - unlike id, which is
+    // scoped to one calendar, iCalUID stays identical across every
+    // attendee's copy of the same invite. When one household member invites
+    // the other, both pulls (InboxRoutes.kt's pullAndStoreCalendarEvents,
+    // once per member) see the same iCalUID but different ids - using it as
+    // CalendarEvent.uid instead of id is what makes the second pull upsert
+    // onto the first member's already-stored ActionItem instead of creating
+    // a duplicate. Falls back to id on the rare event that lacks it (Google
+    // documents this as effectively always present, but nothing enforces
+    // it), matching the old dedup key exactly in that case.
+    val iCalUID: String? = null,
     val summary: String? = null,
     val description: String? = null,
     val status: String? = null,
@@ -126,7 +140,7 @@ private data class CalendarApiEvent(
         val startDateTime = start ?: return null
         val instant = startDateTime.toInstant() ?: return null
         return CalendarEvent(
-            uid = id,
+            uid = iCalUID ?: id,
             summary = summary ?: "(no title)",
             description = description?.let { stripSeparatorLines(it) }?.let { stripDisclaimerFooter(it) }?.ifBlank { null },
             start = instant,

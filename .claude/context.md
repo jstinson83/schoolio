@@ -266,6 +266,25 @@ a Calendar-side reschedule/retitle/cancel actually show up — the
 reconciliation entry below is about a *different, harder* problem (fuzzy
 matching across sources with no shared id), not this one.
 
+**`uid` is the API's `iCalUID`, not its `id`** — deliberately, so an
+invite one household member sends the other dedupes instead of showing up
+twice. Google Calendar API's `id` is scoped to a single calendar: an
+event's organizer and each invited attendee each see a *different* `id`
+for what is, to a person, obviously "the same event." `iCalUID` (RFC5545
+UID) is the field that stays identical across every attendee's copy, so
+`CalendarApiEvent.toCalendarEvent()` (`CalendarClient.kt`) reads `iCalUID`
+(falling back to `id` on the rare event that lacks it) rather than `id`
+directly. Combined with the upsert-by-`uid` behavior above, this means
+both household members' pulls resolve an invited event to the *same*
+`ActionItem` doc rather than creating one per calendar. This is a much
+narrower fix than the general cross-source reconciliation problem below —
+it only covers same-source (Calendar-to-Calendar) duplicates via a shared
+id Google already provides, not fuzzy matching across email and calendar
+with no shared id at all. Landed after the maintainer noticed real
+duplicates from cross-inviting each other; anything already pulled under
+the old `id`-keyed doc id needed a one-time manual cleanup of the stale
+duplicate, not an automated migration.
+
 **All display/grouping dates and times are Eastern (`HOUSEHOLD_ZONE` =
 `America/New_York`, `InboxRoutes.kt`), not UTC** — a `ZoneId`, not a fixed
 offset, so DST (EST/EDT) is handled automatically. Applies consistently

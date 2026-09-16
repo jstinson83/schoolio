@@ -190,6 +190,63 @@ class GoogleCalendarApiClientTest {
         assertEquals("Please pack a lunch and wear comfortable shoes.\n\n\nSee you there!", events.single().description)
     }
 
+    // When one household member invites the other, Google Calendar API gives
+    // each attendee's copy a different id but the same iCalUID - uid needs
+    // to come from iCalUID (not id) so InboxRoutes.kt's per-member pulls
+    // upsert onto the same ActionItem instead of creating a duplicate. See
+    // CalendarClient.kt's CalendarApiEvent.iCalUID doc comment.
+    @Test
+    fun testFetchEventsUsesICalUidNotIdAsUidSoInvitedCopiesDedupe() = runBlocking {
+        val responseJson = """
+            {
+              "items": [
+                {
+                  "id": "organizer-copy-id",
+                  "iCalUID": "shared-ical-uid@google.com",
+                  "summary": "Parent-Teacher Conference",
+                  "start": {"dateTime": "2026-09-20T09:00:00-04:00"}
+                }
+              ]
+            }
+        """.trimIndent()
+        val httpClient = mockClient {
+            respond(responseJson, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+        }
+
+        val event = GoogleCalendarApiClient(httpClient, fakeCredentials())
+            .fetchEvents("test@example.com", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-30T00:00:00Z"))
+            .single()
+
+        assertEquals("shared-ical-uid@google.com", event.uid)
+    }
+
+    // An event with no iCalUID at all (undocumented, but not enforced by the
+    // schema) falls back to id - same dedup key as before this change, not a
+    // regression for that case.
+    @Test
+    fun testFetchEventsFallsBackToIdWhenICalUidIsAbsent() = runBlocking {
+        val responseJson = """
+            {
+              "items": [
+                {
+                  "id": "event-without-ical-uid",
+                  "summary": "Assembly",
+                  "start": {"dateTime": "2026-09-20T09:00:00-04:00"}
+                }
+              ]
+            }
+        """.trimIndent()
+        val httpClient = mockClient {
+            respond(responseJson, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+        }
+
+        val event = GoogleCalendarApiClient(httpClient, fakeCredentials())
+            .fetchEvents("test@example.com", Instant.parse("2026-09-01T00:00:00Z"), Instant.parse("2026-09-30T00:00:00Z"))
+            .single()
+
+        assertEquals("event-without-ical-uid", event.uid)
+    }
+
     @Test
     fun testFetchEventsThrowsOnNonSuccessResponseInsteadOfSilentlyReturningEmpty() = runBlocking {
         val httpClient = mockClient {
