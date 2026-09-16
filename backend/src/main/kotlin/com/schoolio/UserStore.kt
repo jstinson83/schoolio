@@ -43,6 +43,11 @@ data class User(
 interface UserRepository {
     suspend fun findOrCreateByGoogle(googleSub: String, email: String, name: String): User
     suspend fun find(id: String): User?
+    // Needed by POST /internal/sync (InboxRoutes.kt) - that route has only
+    // ALLOWED_EMAILS to work from (there's no session, so no User.id/googleSub
+    // the way every other route gets one from requireUserId()), and has to
+    // look up each allowed account's stored gmailAppPassword by email instead.
+    suspend fun findByEmail(email: String): User?
     suspend fun saveGmailAppPassword(id: String, appPassword: String)
 }
 
@@ -79,6 +84,11 @@ class FirestoreUserStore(
         val doc = collection.document(id).get().get()
         if (!doc.exists()) return null
         return toUser(id, doc.data ?: emptyMap())
+    }
+
+    override suspend fun findByEmail(email: String): User? {
+        val doc = collection.whereEqualTo("email", email).limit(1).get().get().documents.firstOrNull() ?: return null
+        return toUser(doc.id, doc.data ?: emptyMap())
     }
 
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {

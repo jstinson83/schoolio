@@ -1,5 +1,6 @@
 package com.schoolio
 
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.*
 import io.ktor.server.application.*
 import io.ktor.server.freemarker.*
@@ -16,6 +17,7 @@ import org.apache.poi.xwpf.extractor.XWPFWordExtractor
 import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayInputStream
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -560,6 +562,97 @@ fun Route.inboxRoutes(
         // Redirect-after-post so reloading /inbox re-runs the scan with the
         // new settings instead of resubmitting the form.
         call.respondRedirect("/inbox")
+    }
+}
+
+private const val INTERNAL_SYNC_SECRET_HEADER = "X-Internal-Sync-Secret"
+
+// Drives the same pull+process pipeline as scheduleSync above, but for every
+// ALLOWED_EMAILS account at once rather than just whoever's signed in and
+// hitting GET /inbox - meant to be called on a Cloud Scheduler cron interval
+// (see current.md's "Periodic sync + push notifications" sprint task), not
+// from a browser. Mounted outside authenticate(USER_SESSION_PROVIDER_NAME)
+// entirely (see Application.kt) - Cloud Scheduler has no user session, so
+// this is gated by a shared secret header instead of session auth.
+// internalSyncSecret (INTERNAL_SYNC_SECRET env var) has no dev-insecure
+// fallback the way sessionSecret/appPasswordEncryptionKey do - same "unset
+// means nobody gets in" call as ALLOWED_EMAILS, not "weaker but still works"
+// - an open version of this route can trigger real Gemini calls and repeated
+// IMAP/Calendar pulls against both mailboxes on a schedule, not just weaken
+// cookie signing.
+fun Route.internalSyncRoutes(
+    userStore: UserRepository,
+    gmailClient: GmailClient,
+    geminiClient: GeminiClient,
+    calendarClient: CalendarClient?,
+    settingsStore: SettingsRepository,
+    messageStore: MessageRepository,
+    actionItemStore: ActionItemRepository,
+    scanStateStore: ScanStateRepository,
+    allowedEmails: Set<String>,
+    internalSyncSecret: String?
+) {
+    post("/internal/sync") {
+        val provided = call.request.headers[INTERNAL_SYNC_SECRET_HEADER]
+        // MessageDigest.isEqual, not ==/.equals - a plain string compare
+        // short-circuits on the first mismatched byte, which leaks the
+        // correct secret's length/prefix through response timing to anyone
+        // who can hit this route repeatedly. Failing closed on a blank
+        // internalSyncSecret (rather than e.g. treating "" == "" as valid)
+        // is what makes leaving INTERNAL_SYNC_SECRET unset actually disable
+        // the route instead of accepting a blank header.
+        if (internalSyncSecret.isNullOrEmpty() || provided == null ||
+            !MessageDigest.isEqual(provided.toByteArray(), internalSyncSecret.toByteArray())
+        ) {
+            call.respond(HttpStatusCode.Unauthorized)
+            return@post
+        }
+
+        // Same "nothing configured to scan yet" no-op GET /inbox's own
+        // noSendersConfigured branch covers - schoolSenders is shared config
+        // (one settings doc, not per-user), so this is checked once up front
+        // rather than per account below.
+        val settings = settingsStore.get()
+        if (settings.schoolSenders.isEmpty()) {
+            logger.debug("Internal sync: no school senders configured yet, skipping Gmail pull")
+        } else {
+            for (email in allowedEmails) {
+                val appPassword = userStore.findByEmail(email)?.gmailAppPassword
+                if (appPassword == null) {
+                    // Same "hasn't connected Gmail yet" state GET /inbox's
+                    // needsGmailAccess branch covers for a signed-in user -
+                    // an account that's never signed in at all, or signed in
+                    // but never saved an app password, isn't a failure here.
+                    logger.debug("Internal sync: no Gmail app password for {} yet, skipping", email)
+                    continue
+                }
+                try {
+                    pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore)
+                } catch (e: Exception) {
+                    logger.warn("Internal sync: Gmail pull failed for {}", email, e)
+                }
+            }
+        }
+
+        // Calendar has no per-user credential to check (see CalendarClient.kt) -
+        // calendarClient's own nullability already covers "not configured on
+        // this deployment at all" the same way scheduleSync's does.
+        if (calendarClient != null) {
+            for (email in allowedEmails) {
+                try {
+                    pullAndStoreCalendarEvents(email, calendarClient, actionItemStore)
+                } catch (e: Exception) {
+                    logger.debug("Internal sync: calendar pull failed for {} (probably not shared with the service account yet)", email, e)
+                }
+            }
+        }
+
+        // Runs once for every account's newly-pulled messages together, same
+        // "one shared processing pass" shape as scheduleProcessing - not
+        // debounced here since this route only runs on a scheduler's own
+        // interval to begin with, not on every page view.
+        processPendingMessages(messageStore, actionItemStore, geminiClient)
+        call.respond(HttpStatusCode.OK)
     }
 }
 
