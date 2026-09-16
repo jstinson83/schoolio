@@ -14,7 +14,7 @@
 <body>
     <#include "nav.ftl">
     <main class="inbox inbox-photo-import">
-        <h1>Action items</h1>
+        <h1>What's going on</h1>
 
         <div id="importError" class="banner banner-error" hidden></div>
 
