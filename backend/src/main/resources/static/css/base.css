@@ -432,8 +432,33 @@ h1, h2, h3 {
     color: var(--accent-text);
     background: var(--accent);
     padding: 0.1rem 0.5rem;
+    border: none;
     border-radius: 999px;
     font-variant-numeric: tabular-nums;
+    cursor: pointer;
+}
+
+.action-due:hover, .action-due:focus-visible {
+    background: var(--accent-dark);
+}
+
+/* Scoped to :not([hidden]), not a bare rule - a bare `{ display: ... }` rule
+   on this class would permanently defeat the [hidden] attribute app.js
+   toggles it with (equal specificity, author origin beats the browser's own
+   [hidden] rule regardless of selector - see CLAUDE.md's fab-menu gotcha). */
+.date-edit-form:not([hidden]) {
+    display: inline-flex;
+}
+
+.date-edit-input {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    background: #fff;
+    border: 1.5px solid var(--accent);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
 }
 
 .action-description {

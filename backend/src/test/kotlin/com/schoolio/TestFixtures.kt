@@ -165,6 +165,13 @@ class FakeActionItemRepository : ActionItemRepository {
         val index = items.indexOfFirst { it.id == id }
         if (index >= 0) items[index] = items[index].copy(dismissed = false)
     }
+
+    override suspend fun get(id: String): ActionItem? = items.find { it.id == id }
+
+    override suspend fun updateDate(id: String, date: String) {
+        val index = items.indexOfFirst { it.id == id }
+        if (index >= 0) items[index] = items[index].copy(date = date)
+    }
 }
 
 class FakeScanStateRepository(initial: Map<String, Instant> = emptyMap()) : ScanStateRepository {

@@ -665,6 +665,59 @@ class InboxTest {
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("Field day forms"))
     }
 
+    // Tap-the-date-pill inline edit (inbox.ftl/app.js) - POST .../date
+    // updates just the date field and regroups the item under its new date
+    // heading on the next render, same as any other action-item change here.
+    @Test
+    fun testUpdatingAnActionItemsDateMovesItToTheNewDateHeading() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(id = "item-1", sourceMessageId = "none", title = "Field day forms", description = "Sign", date = "2026-09-22")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val beforeBody = client.get("/inbox").bodyAsText()
+        assertTrue(beforeBody.contains("Tuesday, September 22, 2026"))
+
+        val response = client.submitForm(
+            url = "/inbox/action-items/item-1/date",
+            formParameters = Parameters.build { append("date", "2026-10-05") }
+        )
+        assertEquals(HttpStatusCode.Found, response.status)
+        assertEquals("/inbox", response.headers[HttpHeaders.Location])
+        assertEquals("2026-10-05", actionItemStore.items.single().date)
+
+        val afterBody = client.get("/inbox").bodyAsText()
+        assertTrue(afterBody.contains("Monday, October 5, 2026"))
+        assertFalse(afterBody.contains("value=\"2026-09-22\""))
+    }
+
+    // A time-of-day already on the item (a calendar-derived event) isn't
+    // offered on the edit form at all - it should survive an edit untouched
+    // rather than silently getting dropped to midnight.
+    @Test
+    fun testUpdatingAnActionItemsDatePreservesAnExistingTimeOfDay() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(id = "item-1", sourceCalendarEventId = "cal-1", title = "Back to school night", description = "", date = "2026-09-22T18:30")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        client.submitForm(
+            url = "/inbox/action-items/item-1/date",
+            formParameters = Parameters.build { append("date", "2026-09-29") }
+        )
+        assertEquals("2026-09-29T18:30", actionItemStore.items.single().date)
+    }
+
     // Same dismiss/restore flow as action items, but for an "Other updates"
     // message (a PROCESSED message with no action items at all) - see
     // InboxRoutes.kt's POST /inbox/messages/{id}/dismiss and /restore.
