@@ -632,6 +632,49 @@ class InboxTest {
         assertFalse(pastEventsSection.contains("Upcoming field trip"))
     }
 
+    // ActionItemRepository.getAll() (real Firestore, not the fake below) has
+    // no orderBy - without an explicit sort in buildDateGroups/
+    // buildFlatActionItemViews, two near-duplicate items (e.g. the same
+    // event described in two differently-worded emails - see context.md's
+    // cross-source reconciliation note on why that's not auto-merged) could
+    // swap positions between page loads, making it impossible to reliably
+    // dismiss "the one I already decided was the duplicate". Inserting in
+    // reverse-alphabetical order here and asserting the rendered order is
+    // still alphabetical proves the sort is explicit, not just an accident
+    // of insertion order (which the fake repository would otherwise
+    // preserve regardless of whether the real sort exists).
+    @Test
+    fun testActionItemsWithTheSameDateRenderInADeterministicOrder() = testApplication {
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Zebra field trip", description = "Zzz", date = "2099-01-01")
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Apple field trip", description = "Aaa", date = "2099-01-01")
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Zebra permission slip", description = "Zzz", date = "2020-01-01")
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Apple permission slip", description = "Aaa", date = "2020-01-01")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(
+            body.indexOf("Apple field trip") < body.indexOf("Zebra field trip"),
+            "Same-date upcoming items should render in a stable (title) order, not insertion order"
+        )
+        assertTrue(
+            body.indexOf("Apple permission slip") < body.indexOf("Zebra permission slip"),
+            "Same-date past-due items should render in a stable (title) order, not insertion order"
+        )
+    }
+
     // Dismissing an action item (from either the main list or Past events)
     // removes it from /inbox and moves it to the unprominent GET
     // /inbox/dismissed page - see InboxRoutes.kt's dismiss/restore routes.

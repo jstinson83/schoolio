@@ -421,6 +421,19 @@ from neither pipeline.
     different permission slips silently collapsed into one because they
     landed on the same date). Revisit only if duplicates start showing up
     often enough in practice to be annoying, not preemptively.
+  - **Manual dismiss of an undetected duplicate needs deterministic
+    ordering to actually work (decided/fixed)**: raised when the maintainer
+    pointed out they can't tell which of two near-duplicate items to
+    dismiss without a stable order to reason against.
+    `ActionItemRepository.getAll()` (`FirestoreActionItemStore`) has no
+    `orderBy` at all, so `buildDateGroups`/`buildFlatActionItemViews`
+    (`InboxRoutes.kt`) used to render same-date items in whatever order
+    Firestore happened to return them — not guaranteed stable across
+    requests. Both now explicitly sort same-date/same-group items by title
+    (then time-of-day, then id, as final tiebreakers) — this is also what
+    makes it useful, not just stable: two near-duplicate items almost always
+    share a similar title, so sorting by title lands them next to each
+    other for an easy side-by-side dismiss call.
   - **Exact-duplicate case is handled, narrower than the above**: the same
     literal email landing in both mailboxes (a school sending directly to
     both parents' addresses, most commonly) is now caught via content-hash
