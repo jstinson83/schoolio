@@ -11,16 +11,20 @@ alone. See `context.md` for the stable project overview instead.
 Periodic sync + push notifications, so the inbox stays fresh without an
 explicit pull and both household members get notified of new items:
 
-- [ ] Set up a Cloud Scheduler job hitting `POST /internal/sync` on a cron
-      interval, with a header carrying `INTERNAL_SYNC_SECRET` (env var, no
-      dev fallback - unset means the route always 401s).
-      No separate Cloud Run Job resource — reuse the running service.
-- [ ] Add Web Push support: VAPID keypair, `sw.js` `push`/`notificationclick`
-      handlers, client-side `PushManager.subscribe()` wired into `app.js`,
-      subscription stored per-user in Firestore (same shape as
-      `gmailAppPassword`), and a small hand-rolled Web Push sender on the
-      backend (no SDK, matching the Gmail/Gemini/Calendar REST convention).
-- [ ] Wire the sweep to push a notification when new action items land,
-      instead of/alongside just updating Firestore.
+- [ ] Set up a second Cloud Scheduler job hitting `POST
+      /internal/notify-daily` once each morning (a fixed time via
+      Scheduler's own `--time-zone`, not an interval - see
+      `internalNotifyRoutes`' doc comment) - same `INTERNAL_SYNC_SECRET`
+      header the sync job already uses. Maintainer wanted 7am
+      America/New_York as the default time; adjust if they want different.
+- [ ] Set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` on Cloud
+      Run - keys already generated (see chat), waiting on the maintainer to
+      set them via `--update-env-vars` (not `--set-env-vars` - see
+      CLAUDE.md's env-var gotcha).
+- [ ] Do a real end-to-end smoke test once the above are live: subscribe
+      from an actual phone (Settings page's "Enable notifications"), then
+      fire the Scheduler job once manually and confirm a real notification
+      arrives - nothing here has been checked against a live push service
+      yet.
 - [ ] Note: iOS Safari only receives push if the PWA is actually added to
       the home screen, not just opened in a tab.

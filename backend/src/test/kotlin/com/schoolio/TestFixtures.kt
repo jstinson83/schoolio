@@ -43,6 +43,38 @@ class FakeUserRepository : UserRepository {
     override suspend fun saveGmailAppPassword(id: String, appPassword: String) {
         usersById[id]?.let { usersById[id] = it.copy(gmailAppPassword = appPassword) }
     }
+
+    override suspend fun savePushSubscription(id: String, subscription: PushSubscription) {
+        usersById[id]?.let { usersById[id] = it.copy(pushSubscription = subscription) }
+    }
+
+    override suspend fun clearPushSubscription(id: String) {
+        usersById[id]?.let { usersById[id] = it.copy(pushSubscription = null) }
+    }
+}
+
+class FakeNotificationStateRepository : NotificationStateRepository {
+    private var lastSentDate: String? = null
+
+    override suspend fun getLastDailyDigestDate(): String? = lastSentDate
+
+    override suspend fun recordDailyDigestSent(date: String) {
+        lastSentDate = date
+    }
+}
+
+// Records every send rather than actually reaching a push service - lets a
+// test assert exactly which subscriptions got notified (and with what
+// title/body/url) without any real network call or real VAPID keys.
+class FakeWebPushSender(private val result: PushSendResult = PushSendResult.Sent) : WebPushSender {
+    data class SentPush(val subscription: PushSubscription, val title: String, val body: String, val url: String)
+
+    val sent = mutableListOf<SentPush>()
+
+    override suspend fun send(subscription: PushSubscription, title: String, body: String, url: String): PushSendResult {
+        sent.add(SentPush(subscription, title, body, url))
+        return result
+    }
 }
 
 class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : GmailClient {
@@ -345,7 +377,14 @@ fun ApplicationTestBuilder.testModule(
     // Non-null default (unlike the real module()'s unset-means-401 default)
     // so a test can hit POST /internal/sync successfully without every
     // existing testModule() call needing to know about it.
-    internalSyncSecret: String? = "test-internal-sync-secret"
+    internalSyncSecret: String? = "test-internal-sync-secret",
+    notificationStateStore: NotificationStateRepository = FakeNotificationStateRepository(),
+    // Null by default (Web Push "not configured" - see WebPush.kt) so
+    // existing tests that don't touch notifications don't need to know
+    // about it; tests exercising POST /internal/notify-daily pass a
+    // FakeWebPushSender explicitly.
+    webPushSender: WebPushSender? = null,
+    vapidPublicKey: String? = null
 ) {
     application {
         module(
@@ -362,10 +401,14 @@ fun ApplicationTestBuilder.testModule(
             messageStore = messageStore,
             actionItemStore = actionItemStore,
             scanStateStore = scanStateStore,
+            notificationStateStore = notificationStateStore,
             inboxProcessDebounceMs = inboxProcessDebounceMs,
             inboxPullDebounceMs = inboxPullDebounceMs,
             inboxResyncCooldownMs = inboxResyncCooldownMs,
-            internalSyncSecret = internalSyncSecret
+            internalSyncSecret = internalSyncSecret,
+            vapidPublicKey = vapidPublicKey,
+            vapidPrivateKey = null,
+            webPushSender = webPushSender
         )
     }
 }

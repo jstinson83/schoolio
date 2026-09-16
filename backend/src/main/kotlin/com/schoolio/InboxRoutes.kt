@@ -180,7 +180,13 @@ fun Route.inboxRoutes(
     backgroundScope: CoroutineScope,
     processDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
     pullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
-    resyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS
+    resyncCooldownMs: Long = DEFAULT_INBOX_RESYNC_COOLDOWN_MS,
+    // Shown on the settings page so app.js can pass it as
+    // PushManager.subscribe()'s applicationServerKey - null (the
+    // notifications section just says it's not configured) when
+    // VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY aren't set on this deployment (see
+    // Application.kt).
+    vapidPublicKey: String? = null
 ) {
     // A single shared job, not keyed per user - both household accounts share
     // one inbox/one set of messages (see MessageStore.kt), so their pulls
@@ -518,6 +524,8 @@ fun Route.inboxRoutes(
                     "lookbackWeeks" to settings.lookbackWeeks,
                     "hasAppPassword" to (user?.gmailAppPassword != null),
                     "calendarServiceAccountEmail" to calendarServiceAccountEmail,
+                    "vapidPublicKey" to vapidPublicKey,
+                    "hasPushSubscription" to (user?.pushSubscription != null),
                     "activeNav" to "settings"
                 ) + call.currentUserModel()
             )
@@ -578,6 +586,27 @@ fun Route.inboxRoutes(
         // Redirect-after-post so reloading /inbox re-runs the scan with the
         // new settings instead of resubmitting the form.
         call.respondRedirect("/inbox")
+    }
+
+    // Called via fetch() from the Settings page's "Enable notifications"
+    // toggle (app.js), not a plain form post - there's nothing to redirect
+    // to, just a client-side state flip once this confirms. Only stores the
+    // subscription; POST /internal/notify-daily is what actually sends
+    // anything, once a day.
+    post("/push/subscribe") {
+        val userId = call.requireUserId()
+        val subscription = call.receive<PushSubscriptionRequest>()
+        userStore.savePushSubscription(
+            userId,
+            PushSubscription(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth)
+        )
+        call.respond(HttpStatusCode.OK)
+    }
+
+    post("/push/unsubscribe") {
+        val userId = call.requireUserId()
+        userStore.clearPushSubscription(userId)
+        call.respond(HttpStatusCode.OK)
     }
 }
 
@@ -668,6 +697,88 @@ fun Route.internalSyncRoutes(
         // debounced here since this route only runs on a scheduler's own
         // interval to begin with, not on every page view.
         processPendingMessages(messageStore, actionItemStore, geminiClient)
+        call.respond(HttpStatusCode.OK)
+    }
+}
+
+// Once-a-day digest push (WebPush.kt, current.md's "Periodic sync + push
+// notifications" sprint plan) - a different cadence and concern from POST
+// /internal/sync's every-few-minutes pull, so its own route on its own
+// separate Cloud Scheduler job (a fixed morning time, not an interval)
+// rather than folding a "is it morning yet" check into the frequent sync
+// job. Reuses internalSyncSecret/the same header as internalSyncRoutes
+// rather than minting a second shared secret for a two-person app - the
+// trust boundary (Cloud Scheduler, no user session) is identical.
+fun Route.internalNotifyRoutes(
+    userStore: UserRepository,
+    messageStore: MessageRepository,
+    actionItemStore: ActionItemRepository,
+    notificationStateStore: NotificationStateRepository,
+    webPushSender: WebPushSender?,
+    allowedEmails: Set<String>,
+    internalSyncSecret: String?
+) {
+    post("/internal/notify-daily") {
+        val provided = call.request.headers[INTERNAL_SYNC_SECRET_HEADER]
+        if (internalSyncSecret.isNullOrEmpty() || provided == null ||
+            !MessageDigest.isEqual(provided.toByteArray(), internalSyncSecret.toByteArray())
+        ) {
+            call.respond(HttpStatusCode.Unauthorized)
+            return@post
+        }
+
+        // Web Push isn't configured on this deployment at all (no
+        // VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY - see Application.kt) - same
+        // "additive, quietly does nothing" nullability as calendarClient.
+        if (webPushSender == null) {
+            call.respond(HttpStatusCode.OK)
+            return@post
+        }
+
+        val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
+        if (notificationStateStore.getLastDailyDigestDate() == today) {
+            // Already sent today's digest - a Cloud Scheduler retry or an
+            // accidental second trigger shouldn't ping the household twice.
+            call.respond(HttpStatusCode.OK)
+            return@post
+        }
+
+        // Same "what counts as today" as /inbox's own todayGroup split
+        // (buildDateGroups' isToday) - dateKeyAndTime is the one place that
+        // logic lives.
+        val messagesById = messageStore.getAll().associateBy { it.id }
+        val todayCount = actionItemStore.getAll().count { item ->
+            !item.dismissed && item.dateKeyAndTime(item.sourceMessageId?.let { messagesById[it] }).first == today
+        }
+        if (todayCount == 0) {
+            // Nothing due today - "only if there's something that day" (see
+            // current.md). Deliberately doesn't record a sent date here:
+            // that field means "a digest went out today," not "we checked."
+            call.respond(HttpStatusCode.OK)
+            return@post
+        }
+
+        val title = "What's going on today"
+        val body = if (todayCount == 1) "1 thing needs your attention today." else "$todayCount things need your attention today."
+        for (email in allowedEmails) {
+            val subscription = userStore.findByEmail(email)?.pushSubscription ?: continue
+            try {
+                when (val result = webPushSender.send(subscription, title, body, "/inbox")) {
+                    PushSendResult.Sent -> {}
+                    PushSendResult.Gone -> {
+                        // The push service has permanently discarded this
+                        // subscription - clear it so future digests don't
+                        // keep failing the same way for this account.
+                        val userId = userStore.findByEmail(email)?.id
+                        if (userId != null) userStore.clearPushSubscription(userId)
+                    }
+                    is PushSendResult.Failed -> logger.warn("Daily digest push failed for {} with status {}", email, result.status)
+                }
+            } catch (e: Exception) {
+                logger.warn("Daily digest push threw for {}", email, e)
+            }
+        }
+        notificationStateStore.recordDailyDigestSent(today)
         call.respond(HttpStatusCode.OK)
     }
 }

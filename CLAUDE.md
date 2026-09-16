@@ -277,3 +277,43 @@ hit the same way.
   (`.app-nav-menu:not([hidden])`), just not yet applied here. If a future
   element's `[hidden]` toggle appears to do nothing, check for exactly
   this shape before assuming the JS is broken.
+- **`nl.martijndwars:web-push`'s own POM marks its BouncyCastle dependency
+  `optional`, so Gradle's `implementation(...)` silently doesn't pull it in
+  even though the library needs it at compile time** - `WebPush.kt`
+  references `org.bouncycastle.jce.interfaces.ECPublicKey`/`ECPrivateKey`
+  directly, and without `implementation("org.bouncycastle:bcprov-jdk15on:1.70")`
+  declared explicitly in `build.gradle.kts` those references fail to
+  resolve. Caught at compile time here (an `Unresolved reference` error),
+  not a silent runtime gap - but the same "optional dependency Gradle
+  won't chase for you" pattern could bite less visibly (a `ClassNotFoundException`
+  at runtime instead) for a dependency only referenced reflectively/by
+  name rather than imported directly. `WebPush.kt` also has to register
+  `BouncyCastleProvider` itself (`Security.addProvider(...)`, done once via
+  a lazily-initialized top-level val) before calling into the library -
+  it doesn't self-register.
+- **Web Push was originally hand-rolled directly against RFC 8291/8292
+  (ECDH + HKDF + AES-128-GCM + a VAPID JWT) instead of a library, then
+  switched to `nl.martijndwars:web-push` mid-implementation** - the
+  hand-rolled version was only verified by a local encrypt/decrypt
+  round-trip (this dev environment's network policy blocks the sites
+  hosting RFC 8291's own published test vector, and there was no live
+  push service to test against either), which the maintainer correctly
+  judged wasn't worth the residual risk once a maintained library was an
+  option, given how little a real REST/JSON integration this actually is
+  compared to Gmail/Gemini/Calendar's plain-`HttpClient` convention. If a
+  future integration turns out to need real client-side cryptography
+  (not just an HTTP call with a bearer token), reach for a library first
+  rather than defaulting to this project's usual "no SDK" convention -
+  that convention exists to avoid vendor API client bloat, not to avoid
+  correctly-implemented cryptography.
+- **`gcloud run services update --set-env-vars` replaces the entire env var
+  set; `--update-env-vars` merges into it.** Adding one new env var (e.g.
+  `VAPID_PUBLIC_KEY`) with `--set-env-vars` would silently wipe out every
+  other one already configured on Cloud Run - `GOOGLE_CLIENT_ID`,
+  `SESSION_SECRET`, `GMAIL_APP_PASSWORD_KEY`, `ALLOWED_EMAILS`,
+  `GEMINI_API_KEY`, `CALENDAR_SERVICE_ACCOUNT_KEY`, all of it - breaking
+  sign-in/Gmail/Calendar in one command, since none of those are managed
+  through `cloudbuild.yaml` (see context.md's Configuration reference) and
+  so wouldn't get restored on the next deploy either. Always use
+  `--update-env-vars` when adding/changing one env var on an existing
+  deployment.

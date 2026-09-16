@@ -50,6 +50,22 @@ dependencies {
     // as a plain-text prompt instead (see GeminiClient.kt's
     // extractCalendarEventsFromText).
     implementation("org.apache.poi:poi-ooxml:5.5.1")
+    // Web Push (RFC 8291 message encryption + RFC 8292 VAPID) for the daily
+    // digest notification (WebPush.kt) - unlike Gmail/Gemini/Calendar, this
+    // isn't a REST API with a JSON body to shape by hand, it's a real
+    // client-side crypto protocol (ECDH + HKDF + AES-128-GCM), so it's the
+    // one integration in this app that uses a library instead of a plain
+    // HttpClient call. Pulls in BouncyCastle as a transitive dependency -
+    // this library's own EC key handling is BC-specific, not pure JDK, which
+    // is why WebPush.kt registers BouncyCastleProvider before using it.
+    implementation("nl.martijndwars:web-push:5.1.2")
+    // web-push's own POM marks this as an optional dependency, so Gradle
+    // won't pull it in transitively even though the library requires it at
+    // both compile and runtime (WebPush.kt references
+    // org.bouncycastle.jce.interfaces.EC*PublicKey/PrivateKey directly) -
+    // has to be declared here explicitly. Version pinned to match what
+    // web-push:5.1.2's POM itself depends on.
+    implementation("org.bouncycastle:bcprov-jdk15on:1.70")
     testImplementation("io.ktor:ktor-server-tests-jvm")
     testImplementation("io.ktor:ktor-client-mock-jvm")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
