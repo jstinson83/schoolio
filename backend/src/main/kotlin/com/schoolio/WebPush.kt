@@ -130,27 +130,22 @@ class LibraryWebPushSender(
                 .payload(payload)
                 .ttl(Duration.ofHours(24).seconds.toInt())
                 .build()
-            // Temporary diagnostic (see CLAUDE.md's Web Push 403
-            // investigation) - logs the actual outgoing Authorization/
-            // Content-Encoding headers so a live rejection can be checked
-            // against what was really sent rather than inferred from the
-            // push service's own (often generic/stale) error text. Builds a
-            // second HttpPost purely to inspect it, separate from the one
-            // pushService.send() below builds and executes - a little
-            // wasteful (signs the VAPID JWT twice) but harmless, and never
-            // executed itself.
-            runCatching {
-                val diagnosticRequest = pushService.preparePost(notification, Encoding.AES128GCM)
-                val authHeader = diagnosticRequest.getFirstHeader("Authorization")?.value
-                val kValue = authHeader?.substringAfter("k=", missingDelimiterValue = "")
-                logger.info(
-                    "Daily digest diagnostic: Content-Encoding={}, Authorization k= matches configured VAPID_PUBLIC_KEY: {} (k= length {})",
-                    diagnosticRequest.getFirstHeader("Content-Encoding")?.value,
-                    kValue == vapidPublicKey,
-                    kValue?.length
-                )
-            }.onFailure { logger.warn("Daily digest diagnostic: failed to build inspection request", it) }
-            val response = pushService.send(notification)
+            // A prior diagnostic pass confirmed the aes128gcm request this
+            // library builds is exactly correct per RFC 8291/8292 - right
+            // Content-Encoding, an Authorization "k=" that exactly matches
+            // the configured VAPID_PUBLIC_KEY at the expected length - and
+            // FCM still 403ed with "crypto-key header had invalid format...
+            // p256ecdsa=base64(...)". That's the literal shape of the
+            // *older* aesgcm encoding's Crypto-Key header, so rather than
+            // keep assuming that wording is just stale, this takes it at
+            // face value and sends aesgcm explicitly instead of the
+            // library's aes128gcm default - the library supports both
+            // (Encoding.AESGCM/AES128GCM), and this is the cheapest way to
+            // find out whether FCM genuinely wants the older shape here.
+            logger.info(
+                "Daily digest diagnostic: sending with Encoding.AESGCM instead of the default AES128GCM (see WebPush.kt's send() comment)"
+            )
+            val response = pushService.send(notification, Encoding.AESGCM)
             when (val status = response.statusLine.statusCode) {
                 200, 201, 202 -> PushSendResult.Sent
                 404, 410 -> PushSendResult.Gone
