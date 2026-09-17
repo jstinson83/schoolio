@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import nl.martijndwars.webpush.Notification
 import nl.martijndwars.webpush.PushService
 import nl.martijndwars.webpush.Utils
+import org.apache.http.util.EntityUtils
 import org.bouncycastle.jce.ECNamedCurveTable
 import org.bouncycastle.jce.interfaces.ECPrivateKey
 import org.bouncycastle.jce.interfaces.ECPublicKey
@@ -72,7 +73,12 @@ sealed interface PushSendResult {
     // itself revoked it) - the caller should stop trying to use it, not just
     // log and retry next time.
     data object Gone : PushSendResult
-    data class Failed(val status: Int) : PushSendResult
+    // body carries the push service's own rejection text when it has one
+    // (FCM/autopush both return a short explanation on 4xx, e.g. an invalid
+    // or mismatched VAPID key) - genuinely the only way to tell "wrong
+    // audience" apart from "expired credentials" apart from "malformed
+    // request" from the status code alone.
+    data class Failed(val status: Int, val body: String? = null) : PushSendResult
 }
 
 interface WebPushSender {
@@ -105,10 +111,16 @@ class LibraryWebPushSender(
                 .ttl(Duration.ofHours(24).seconds.toInt())
                 .build()
             val response = pushService.send(notification)
-            when (response.statusLine.statusCode) {
+            when (val status = response.statusLine.statusCode) {
                 200, 201, 202 -> PushSendResult.Sent
                 404, 410 -> PushSendResult.Gone
-                else -> PushSendResult.Failed(response.statusLine.statusCode)
+                else -> {
+                    // The entity can only be consumed once and only while
+                    // the response is still open - read it now rather than
+                    // handing the raw HttpResponse back to the caller.
+                    val bodyText = runCatching { response.entity?.let { EntityUtils.toString(it) } }.getOrNull()
+                    PushSendResult.Failed(status, bodyText)
+                }
             }
         }
 }

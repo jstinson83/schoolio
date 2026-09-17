@@ -799,7 +799,7 @@ fun Route.internalNotifyRoutes(
                         val userId = userStore.findByEmail(email)?.id
                         if (userId != null) userStore.clearPushSubscription(userId)
                     }
-                    is PushSendResult.Failed -> logger.warn("Daily digest push failed for {} with status {}", email, result.status)
+                    is PushSendResult.Failed -> logger.warn("Daily digest push failed for {} with status {}: {}", email, result.status, result.body)
                 }
             } catch (e: Exception) {
                 logger.warn("Daily digest push threw for {}", email, e)
