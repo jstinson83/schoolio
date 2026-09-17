@@ -166,11 +166,18 @@ fun Application.module(
         autoEscapingPolicy = Configuration.ENABLE_IF_DEFAULT_AUTO_ESCAPING_POLICY
     }
 
-    // Server-side JSON responses (GET /inbox/status - see InboxRoutes.kt),
+    // Server-side JSON responses (GET /inbox/status) and requests (POST
+    // /push/subscribe's PushSubscriptionRequest - see InboxRoutes.kt),
     // distinct from the client-side ContentNegotiation installed on
-    // oauthHttpClient/geminiHttpClient above.
+    // oauthHttpClient/geminiHttpClient above. ignoreUnknownKeys matters here
+    // specifically for /push/subscribe: a real browser's
+    // PushSubscription.toJSON() includes an expirationTime field
+    // PushSubscriptionRequest doesn't declare, and kotlinx.serialization
+    // rejects unknown keys by default - without this, every real subscribe
+    // call 400s (BadRequestException) even though the shape it actually
+    // needs (endpoint, keys.p256dh, keys.auth) decodes fine.
     install(ContentNegotiation) {
-        json()
+        json(Json { ignoreUnknownKeys = true })
     }
 
     installGoogleAuth(oauthClient, oauthRedirectBaseUrl, sessionSecret)

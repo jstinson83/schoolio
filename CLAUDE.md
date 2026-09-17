@@ -306,6 +306,22 @@ hit the same way.
   rather than defaulting to this project's usual "no SDK" convention -
   that convention exists to avoid vendor API client bloat, not to avoid
   correctly-implemented cryptography.
+- **kotlinx.serialization rejects unknown JSON keys by default, and the
+  server's `install(ContentNegotiation) { json() }` (`Application.kt`) never
+  overrode that** - unlike `oauthHttpClient`/`geminiHttpClient`'s own `Json`
+  instances, which both explicitly set `ignoreUnknownKeys = true`. Never
+  bit anything before `POST /push/subscribe` (`WebPush.kt`'s
+  `PushSubscriptionRequest`) because it's the first route that ever
+  receives a JSON body server-side - a real browser's
+  `PushSubscription.toJSON()` includes an `expirationTime` field
+  `PushSubscriptionRequest` doesn't declare, so every real subscribe call
+  400ed (`BadRequestException`) even though the fields the route actually
+  needs (`endpoint`, `keys.p256dh`, `keys.auth`) decoded fine on their own.
+  Fixed by adding the same `ignoreUnknownKeys = true` override to the
+  server-side `Json` config. If a future route adds another
+  `call.receive<T>()` for a real-world JSON payload (not one this app
+  constructs itself), assume the sender includes fields the receiving type
+  doesn't declare and check for exactly this failure mode first.
 - **`gcloud run services update --set-env-vars` replaces the entire env var
   set; `--update-env-vars` merges into it.** Adding one new env var (e.g.
   `VAPID_PUBLIC_KEY`) with `--set-env-vars` would silently wipe out every
