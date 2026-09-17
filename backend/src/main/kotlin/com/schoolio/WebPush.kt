@@ -11,10 +11,13 @@ import org.bouncycastle.jce.ECNamedCurveTable
 import org.bouncycastle.jce.interfaces.ECPrivateKey
 import org.bouncycastle.jce.interfaces.ECPublicKey
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.slf4j.LoggerFactory
 import java.security.KeyPairGenerator
 import java.security.Security
 import java.time.Duration
 import java.util.Base64
+
+private val logger = LoggerFactory.getLogger("WebPush")
 
 // Web Push (RFC 8291 message encryption + RFC 8292 VAPID) via
 // nl.martijndwars:web-push rather than hand-rolled - unlike Gmail/Gemini/
@@ -92,7 +95,23 @@ class LibraryWebPushSender(
     vapidPrivateKey: String,
     vapidSubject: String
 ) : WebPushSender {
-    init { check(bouncyCastleRegistered) }
+    init {
+        check(bouncyCastleRegistered)
+        // A correctly-generated VAPID key pair (generateVapidKeyPair's own
+        // format - a 65-byte uncompressed EC point / a 32-byte scalar, both
+        // base64url without padding) is always exactly 87 / 43 characters.
+        // A key that's been truncated (a copy-paste mishap setting the env
+        // var, a shell quoting issue) is otherwise invisible until a send
+        // fails against a live push service with a cryptic rejection - log
+        // this once at startup so a wrong length is immediately checkable
+        // without waiting for that failure.
+        if (vapidPublicKey.length != 87) {
+            logger.warn("VAPID_PUBLIC_KEY is {} characters, expected 87 - likely truncated or malformed", vapidPublicKey.length)
+        }
+        if (vapidPrivateKey.length != 43) {
+            logger.warn("VAPID_PRIVATE_KEY is {} characters, expected 43 - likely truncated or malformed", vapidPrivateKey.length)
+        }
+    }
 
     private val pushService = PushService(vapidPublicKey, vapidPrivateKey, vapidSubject)
 
