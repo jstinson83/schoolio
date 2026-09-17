@@ -3,6 +3,7 @@ package com.schoolio
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import nl.martijndwars.webpush.Encoding
 import nl.martijndwars.webpush.Notification
 import nl.martijndwars.webpush.PushService
 import nl.martijndwars.webpush.Utils
@@ -91,7 +92,7 @@ interface WebPushSender {
 // One PushService per deployment (holds the VAPID key pair + subject), same
 // "one client, reused across calls" shape as GmailClient/CalendarClient.
 class LibraryWebPushSender(
-    vapidPublicKey: String,
+    private val vapidPublicKey: String,
     vapidPrivateKey: String,
     vapidSubject: String
 ) : WebPushSender {
@@ -129,6 +130,26 @@ class LibraryWebPushSender(
                 .payload(payload)
                 .ttl(Duration.ofHours(24).seconds.toInt())
                 .build()
+            // Temporary diagnostic (see CLAUDE.md's Web Push 403
+            // investigation) - logs the actual outgoing Authorization/
+            // Content-Encoding headers so a live rejection can be checked
+            // against what was really sent rather than inferred from the
+            // push service's own (often generic/stale) error text. Builds a
+            // second HttpPost purely to inspect it, separate from the one
+            // pushService.send() below builds and executes - a little
+            // wasteful (signs the VAPID JWT twice) but harmless, and never
+            // executed itself.
+            runCatching {
+                val diagnosticRequest = pushService.preparePost(notification, Encoding.AES128GCM)
+                val authHeader = diagnosticRequest.getFirstHeader("Authorization")?.value
+                val kValue = authHeader?.substringAfter("k=", missingDelimiterValue = "")
+                logger.info(
+                    "Daily digest diagnostic: Content-Encoding={}, Authorization k= matches configured VAPID_PUBLIC_KEY: {} (k= length {})",
+                    diagnosticRequest.getFirstHeader("Content-Encoding")?.value,
+                    kValue == vapidPublicKey,
+                    kValue?.length
+                )
+            }.onFailure { logger.warn("Daily digest diagnostic: failed to build inspection request", it) }
             val response = pushService.send(notification)
             when (val status = response.statusLine.statusCode) {
                 200, 201, 202 -> PushSendResult.Sent
