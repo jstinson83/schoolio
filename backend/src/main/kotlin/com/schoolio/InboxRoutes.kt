@@ -731,14 +731,17 @@ fun Route.internalNotifyRoutes(
         // VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY - see Application.kt) - same
         // "additive, quietly does nothing" nullability as calendarClient.
         if (webPushSender == null) {
+            logger.info("Daily digest: no-op, Web Push isn't configured (no VAPID keys)")
             call.respond(HttpStatusCode.OK)
             return@post
         }
 
         val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
-        if (notificationStateStore.getLastDailyDigestDate() == today) {
+        val lastSent = notificationStateStore.getLastDailyDigestDate()
+        if (lastSent == today) {
             // Already sent today's digest - a Cloud Scheduler retry or an
             // accidental second trigger shouldn't ping the household twice.
+            logger.info("Daily digest: no-op, already sent today ({})", today)
             call.respond(HttpStatusCode.OK)
             return@post
         }
@@ -754,21 +757,29 @@ fun Route.internalNotifyRoutes(
             // Nothing due today - "only if there's something that day" (see
             // current.md). Deliberately doesn't record a sent date here:
             // that field means "a digest went out today," not "we checked."
+            logger.info("Daily digest: no-op, nothing due today ({})", today)
             call.respond(HttpStatusCode.OK)
             return@post
         }
 
         val title = "What's going on today"
         val body = if (todayCount == 1) "1 thing needs your attention today." else "$todayCount things need your attention today."
+        var subscribedCount = 0
         for (email in allowedEmails) {
-            val subscription = userStore.findByEmail(email)?.pushSubscription ?: continue
+            val subscription = userStore.findByEmail(email)?.pushSubscription
+            if (subscription == null) {
+                logger.info("Daily digest: no push subscription stored for {}, skipping", email)
+                continue
+            }
+            subscribedCount++
             try {
                 when (val result = webPushSender.send(subscription, title, body, "/inbox")) {
-                    PushSendResult.Sent -> {}
+                    PushSendResult.Sent -> logger.info("Daily digest: sent to {}", email)
                     PushSendResult.Gone -> {
                         // The push service has permanently discarded this
                         // subscription - clear it so future digests don't
                         // keep failing the same way for this account.
+                        logger.info("Daily digest: subscription for {} is gone (404/410), clearing it", email)
                         val userId = userStore.findByEmail(email)?.id
                         if (userId != null) userStore.clearPushSubscription(userId)
                     }
@@ -778,6 +789,7 @@ fun Route.internalNotifyRoutes(
                 logger.warn("Daily digest push threw for {}", email, e)
             }
         }
+        logger.info("Daily digest: {} due today, {} of {} allowed accounts subscribed", todayCount, subscribedCount, allowedEmails.size)
         notificationStateStore.recordDailyDigestSent(today)
         call.respond(HttpStatusCode.OK)
     }
