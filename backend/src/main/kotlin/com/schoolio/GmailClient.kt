@@ -28,7 +28,25 @@ import java.util.Properties
 // ScanState's per-sender watermark (see ScanStateStore.kt) - a formatted
 // string isn't safely comparable/sortable across the differing date formats
 // real email clients send.
-data class GmailMessage(val id: String, val subject: String, val from: String, val date: String, val receivedAt: Instant, val bodyText: String)
+data class GmailMessage(
+    val id: String,
+    val subject: String,
+    val from: String,
+    val date: String,
+    val receivedAt: Instant,
+    val bodyText: String,
+    // Raw bytes, not yet uploaded anywhere - InboxRoutes.kt's
+    // pullAndStoreNewMessages is what turns these into a StoredAttachment
+    // (uploading to Cloud Storage via AttachmentRepository) at the point an
+    // EmailMessage is persisted. Kept as a plain class rather than a data
+    // class - a ByteArray field would give this a content-based equals/
+    // hashCode that's never actually used (nothing compares two
+    // EmailAttachments), and a data class default toString() would dump raw
+    // bytes into any log line that happens to include one.
+    val attachments: List<EmailAttachment> = emptyList()
+)
+
+class EmailAttachment(val filename: String, val contentType: String, val bytes: ByteArray)
 
 interface GmailClient {
     // email/appPassword are per-user (User.email/User.gmailAppPassword) - the
@@ -106,7 +124,8 @@ class ImapGmailClient(
             from = from?.firstOrNull()?.toString() ?: "(unknown sender)",
             date = (sentDate ?: receivedDate)?.toString() ?: "",
             receivedAt = at,
-            bodyText = extractPlainText(this).ifBlank { extractFirstHtmlAsText(this) }
+            bodyText = extractPlainText(this).ifBlank { extractFirstHtmlAsText(this) },
+            attachments = extractAttachments(this)
         )
     }
 
@@ -138,5 +157,37 @@ class ImapGmailClient(
             }
         }
         return ""
+    }
+
+    // Any part with a filename that isn't the text/plain or text/html body
+    // itself - covers both Part.ATTACHMENT (a real attached file) and
+    // Part.INLINE parts that still carry a filename (some mail clients mark
+    // an embedded image that way instead of ATTACHMENT); a filename is what
+    // actually distinguishes "a file the sender attached" from an inline
+    // multipart/alternative body part, not the disposition header, which
+    // real-world senders are inconsistent about setting at all. Skips
+    // anything over MAX_IMPORT_FILE_BYTES (InboxRoutes.kt's existing cap on
+    // an uploaded calendar photo/PDF - reused here rather than a second
+    // constant, same "reject something absurd, not a real capacity limit for
+    // a two-person app" reasoning) instead of throwing, so one oversized
+    // attachment doesn't fail the whole message pull.
+    private fun extractAttachments(part: Part): List<EmailAttachment> {
+        if (part.isMimeType("multipart/*")) {
+            val multipart = part.content as Multipart
+            return (0 until multipart.count).flatMap { extractAttachments(multipart.getBodyPart(it)) }
+        }
+        val filename = part.fileName
+        if (filename.isNullOrBlank() || part.isMimeType("text/plain") || part.isMimeType("text/html")) return emptyList()
+        val bytes = part.inputStream.readBytes()
+        if (bytes.size > MAX_IMPORT_FILE_BYTES) return emptyList()
+        // Lowercased - a MIME content-type's type/subtype is case-insensitive
+        // per RFC 2045, but not every server preserves the case it was sent
+        // in (GreenMail's own IMAP fetch round-trips "application/pdf" back
+        // as "APPLICATION/PDF" - caught by ImapGmailClientTest, not
+        // theoretical). InboxProcessingSweep.kt's image/PDF filter does a
+        // literal string comparison, so normalizing here once is simpler
+        // than case-insensitive-comparing everywhere downstream.
+        val contentType = part.contentType.substringBefore(";").trim().lowercase()
+        return listOf(EmailAttachment(filename, contentType, bytes))
     }
 }

@@ -1,6 +1,6 @@
 package com.schoolio
 
-import io.ktor.http.HttpStatusCode
+import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.application.*
 import io.ktor.server.freemarker.*
@@ -177,6 +177,12 @@ fun Route.inboxRoutes(
     messageStore: MessageRepository,
     actionItemStore: ActionItemRepository,
     scanStateStore: ScanStateRepository,
+    // Null when ATTACHMENTS_BUCKET isn't set on this deployment (see
+    // Application.kt) - same "additive, not a hard gate" nullability as
+    // calendarClient. Threaded through to both pullAndStoreNewMessages
+    // (uploading a newly-pulled message's attachments) and
+    // processPendingMessages (re-downloading image/PDF ones for Gemini).
+    attachmentStore: AttachmentRepository?,
     backgroundScope: CoroutineScope,
     processDebounceMs: Long = DEFAULT_INBOX_PROCESS_DEBOUNCE_MS,
     pullDebounceMs: Long = DEFAULT_INBOX_PULL_DEBOUNCE_MS,
@@ -197,7 +203,7 @@ fun Route.inboxRoutes(
         processingJob?.cancel()
         processingJob = backgroundScope.launch {
             delay(processDebounceMs)
-            processPendingMessages(messageStore, actionItemStore, geminiClient)
+            processPendingMessages(messageStore, actionItemStore, geminiClient, attachmentStore)
         }
     }
 
@@ -238,7 +244,7 @@ fun Route.inboxRoutes(
         pullJobs[userId] = backgroundScope.launch {
             try {
                 delay(pullDebounceMs)
-                pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore)
+                pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore, attachmentStore)
             } catch (e: Exception) {
                 // Best-effort - a transient IMAP failure shouldn't leave this
                 // user stuck "syncing" forever (see isSyncing above); the
@@ -309,7 +315,7 @@ fun Route.inboxRoutes(
         // isToday) so inbox.ftl can render it as its own "Today" section
         // ahead of everything else, rather than just another date-group in
         // the chronological list.
-        val dateGroups = buildDateGroups(upcomingActionItems, messagesById, user.email, today)
+        val dateGroups = buildDateGroups(upcomingActionItems, messagesById, today)
         val todayGroup = dateGroups.firstOrNull { it["isToday"] == true }
         val upcomingGroups = dateGroups.filterNot { it["isToday"] == true }
         call.respond(
@@ -319,13 +325,13 @@ fun Route.inboxRoutes(
                     "syncing" to isSyncing(userId),
                     "todayGroup" to todayGroup,
                     "upcomingGroups" to upcomingGroups,
-                    "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById, user.email),
+                    "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
                     "noActionMessages" to processedWithNoActionItems.map {
-                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary, "gmailLink" to it.gmailLinkFor(user.email))
+                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary)
                     },
                     "failedMessages" to failedMessages.map {
-                        mapOf("subject" to it.subject, "reason" to it.failureReason, "gmailLink" to it.gmailLinkFor(user.email))
+                        mapOf("id" to it.id, "subject" to it.subject, "reason" to it.failureReason)
                     },
                     "pendingCount" to pendingMessages.size
                 ) + navModel + call.currentUserModel()
@@ -341,8 +347,6 @@ fun Route.inboxRoutes(
     // no urgency ordering to preserve here, and the date headings are still
     // useful context for "what was this."
     get("/inbox/dismissed") {
-        val userId = call.requireUserId()
-        val currentUserEmail = userStore.find(userId)?.email ?: ""
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
         val dismissedItems = actionItemStore.getAll().filter { it.dismissed }
@@ -351,9 +355,9 @@ fun Route.inboxRoutes(
             FreeMarkerContent(
                 "dismissed.ftl",
                 mapOf(
-                    "dateGroups" to buildDateGroups(dismissedItems, messagesById, currentUserEmail, descending = true),
+                    "dateGroups" to buildDateGroups(dismissedItems, messagesById, descending = true),
                     "dismissedMessages" to dismissedMessages.map {
-                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary, "gmailLink" to it.gmailLinkFor(currentUserEmail))
+                        mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary)
                     },
                     "activeNav" to "dismissed"
                 ) + call.currentUserModel()
@@ -405,6 +409,55 @@ fun Route.inboxRoutes(
     post("/inbox/messages/{id}/restore") {
         call.parameters["id"]?.let { messageStore.restore(it) }
         call.respondRedirect("/inbox/dismissed")
+    }
+
+    // The full-email view replacing the old Gmail deep link (see
+    // gmailLinkFor's old doc comment, above pullAndStoreNewMessages) - both
+    // household accounts can open this regardless of which mailbox actually
+    // pulled the message, unlike a Gmail search link. Shows the stored
+    // bodyText plus a download link per attachment (attachmentIndex is just
+    // the position in EmailMessage.attachments - see the route below).
+    get("/inbox/messages/{id}") {
+        val message = call.parameters["id"]?.let { messageStore.get(it) }
+            ?: return@get call.respond(HttpStatusCode.NotFound)
+        call.respond(
+            FreeMarkerContent(
+                "message.ftl",
+                mapOf(
+                    "message" to mapOf(
+                        "id" to message.id,
+                        "subject" to message.subject,
+                        "from" to message.from,
+                        "date" to message.date,
+                        "bodyText" to message.bodyText,
+                        "summary" to message.summary,
+                        "attachments" to message.attachments.mapIndexed { index, attachment ->
+                            mapOf("index" to index, "filename" to attachment.filename, "contentType" to attachment.contentType, "size" to attachment.size)
+                        }
+                    )
+                ) + call.currentUserModel()
+            )
+        )
+    }
+
+    // Streams one attachment's bytes back out of Cloud Storage - index is the
+    // attachment's position in EmailMessage.attachments (stable for a given
+    // message doc, since attachments are only ever written once at pull time,
+    // never reordered). 404s rather than 500s both when the message/index
+    // doesn't exist and when attachmentStore itself is null (ATTACHMENTS_BUCKET
+    // unset) - either way there's nothing to serve.
+    get("/inbox/messages/{id}/attachments/{index}") {
+        val message = call.parameters["id"]?.let { messageStore.get(it) }
+            ?: return@get call.respond(HttpStatusCode.NotFound)
+        val attachment = call.parameters["index"]?.toIntOrNull()?.let { message.attachments.getOrNull(it) }
+            ?: return@get call.respond(HttpStatusCode.NotFound)
+        val bytes = attachmentStore?.download(attachment.storagePath)
+            ?: return@get call.respond(HttpStatusCode.NotFound)
+        call.response.header(
+            HttpHeaders.ContentDisposition,
+            ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, attachment.filename).toString()
+        )
+        call.respondBytes(bytes, ContentType.parse(attachment.contentType))
     }
 
     // The photo-import feature lives directly on the main /inbox page
@@ -634,6 +687,7 @@ fun Route.internalSyncRoutes(
     messageStore: MessageRepository,
     actionItemStore: ActionItemRepository,
     scanStateStore: ScanStateRepository,
+    attachmentStore: AttachmentRepository?,
     allowedEmails: Set<String>,
     internalSyncSecret: String?
 ) {
@@ -672,7 +726,7 @@ fun Route.internalSyncRoutes(
                     continue
                 }
                 try {
-                    pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore)
+                    pullAndStoreNewMessages(email, appPassword, settings, gmailClient, messageStore, scanStateStore, attachmentStore)
                 } catch (e: Exception) {
                     logger.warn("Internal sync: Gmail pull failed for {}", email, e)
                 }
@@ -696,7 +750,7 @@ fun Route.internalSyncRoutes(
         // "one shared processing pass" shape as scheduleProcessing - not
         // debounced here since this route only runs on a scheduler's own
         // interval to begin with, not on every page view.
-        processPendingMessages(messageStore, actionItemStore, geminiClient)
+        processPendingMessages(messageStore, actionItemStore, geminiClient, attachmentStore)
         call.respond(HttpStatusCode.OK)
     }
 }
@@ -825,7 +879,8 @@ private suspend fun pullAndStoreNewMessages(
     settings: ScanSettings,
     gmailClient: GmailClient,
     messageStore: MessageRepository,
-    scanStateStore: ScanStateRepository
+    scanStateStore: ScanStateRepository,
+    attachmentStore: AttachmentRepository?
 ) {
     val watermarks = scanStateStore.getWatermarks()
     val fallbackSince = Instant.now().minus(Duration.ofDays(settings.lookbackWeeks * 7L))
@@ -841,13 +896,30 @@ private suspend fun pullAndStoreNewMessages(
                 date = message.date,
                 receivedAt = message.receivedAt,
                 bodyText = message.bodyText,
-                scannedByEmail = email
+                scannedByEmail = email,
+                attachments = message.uploadAttachments(attachmentStore)
             )
         )
     }
     for (sender in settings.schoolSenders) {
         val latestForSender = fetched.filter { it.from.contains(sender, ignoreCase = true) }.maxOfOrNull { it.receivedAt }
         if (latestForSender != null) scanStateStore.recordSeen(sender, latestForSender)
+    }
+}
+
+// Uploads a freshly-pulled message's attachments (if any) and turns them into
+// the metadata EmailMessage actually stores - a no-op (attachments dropped,
+// not stored) when attachmentStore is null, same "additive feature, deployment
+// hasn't configured it yet" nullability as calendarClient. storagePath
+// includes the attachment's index so two attachments in the same email
+// sharing a filename (rare, but real senders do reuse "image.png" across
+// inline images) don't collide in the bucket.
+private suspend fun GmailMessage.uploadAttachments(attachmentStore: AttachmentRepository?): List<StoredAttachment> {
+    if (attachmentStore == null) return emptyList()
+    return attachments.mapIndexed { index, attachment ->
+        val storagePath = "messages/${id.replace("/", "_")}/$index-${attachment.filename.replace("/", "_")}"
+        attachmentStore.upload(storagePath, attachment.contentType, attachment.bytes)
+        StoredAttachment(attachment.filename, attachment.contentType, attachment.bytes.size.toLong(), storagePath)
     }
 }
 
@@ -893,17 +965,6 @@ private val timedEventDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'
 private val allDayDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(HOUSEHOLD_ZONE)
 
 private val groupHeadingFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy")
-
-// Only the household account whose own mailbox a message was pulled from can
-// actually open EmailMessage.gmailSearchLink() - see EmailMessage.
-// scannedByEmail's doc comment for why (a Gmail deep link is inherently
-// account-scoped, and the same email delivered to both parents gets a
-// different Message-ID in each mailbox). currentUserEmail is whichever
-// household account is signed in for *this* request - comparing
-// case-insensitively since email addresses aren't case-sensitive and Google
-// account emails in particular are commonly typed/stored in mixed case.
-private fun EmailMessage.gmailLinkFor(currentUserEmail: String): String? =
-    if (scannedByEmail.isNotBlank() && scannedByEmail.equals(currentUserEmail, ignoreCase = true)) gmailSearchLink() else null
 
 // ActionItem.date is already YYYY-MM-DD (optionally with a 'T'HH:MM suffix -
 // see ActionItemStore.kt's doc comment), so the first 10 characters are
@@ -957,7 +1018,7 @@ private fun formatGroupHeading(dateKey: String): String =
 // chronological (most recent date first) - there's no urgency ordering to
 // preserve once something's dismissed, and the most recently-relevant date
 // is the more useful thing to see at the top of a review list.
-private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String, today: String? = null, descending: Boolean = false): List<Map<String, Any?>> {
+private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, today: String? = null, descending: Boolean = false): List<Map<String, Any?>> {
     data class Dated(val dateKey: String, val time: String?, val item: ActionItem, val message: EmailMessage?)
 
     val dated = actionItems.map { item ->
@@ -994,7 +1055,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
                     "from" to (dated.message?.from ?: ""),
                     "summary" to (dated.message?.summary ?: ""),
                     "photoImport" to dated.item.sourcePhotoImport,
-                    "gmailLink" to dated.message?.gmailLinkFor(currentUserEmail)
+                    "messageId" to dated.message?.id
                 )
             }
         )
@@ -1011,7 +1072,7 @@ private fun buildDateGroups(actionItems: List<ActionItem>, messagesById: Map<Str
 // tiebreakers for items sharing a date - same "make Firestore's unordered
 // getAll() deterministic across page loads, and land likely-duplicate
 // titles next to each other" reasoning as buildDateGroups' own sort.
-private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>, currentUserEmail: String): List<Map<String, Any?>> =
+private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById: Map<String, EmailMessage>): List<Map<String, Any?>> =
     actionItems.sortedWith(
         compareByDescending<ActionItem> { it.date }.thenBy { it.title.lowercase() }.thenBy { it.id }
     ).map { item ->
@@ -1025,6 +1086,6 @@ private fun buildFlatActionItemViews(actionItems: List<ActionItem>, messagesById
             "from" to (message?.from ?: ""),
             "summary" to (message?.summary ?: ""),
             "photoImport" to item.sourcePhotoImport,
-            "gmailLink" to message?.gmailLinkFor(currentUserEmail)
+            "messageId" to message?.id
         )
     }

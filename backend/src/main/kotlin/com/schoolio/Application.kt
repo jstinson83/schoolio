@@ -3,6 +3,8 @@ package com.schoolio
 import com.google.auth.oauth2.ServiceAccountCredentials
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.FirestoreOptions
+import com.google.cloud.storage.Storage
+import com.google.cloud.storage.StorageOptions
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.serialization.kotlinx.json.*
@@ -37,6 +39,12 @@ private val firestoreClient: Firestore by lazy {
     val databaseId = System.getenv("FIRESTORE_DATABASE_ID") ?: "schoolio"
     FirestoreOptions.newBuilder().setDatabaseId(databaseId).build().service
 }
+
+// Backs GcsAttachmentStore (AttachmentStore.kt) - same ADC-based auth as
+// firestoreClient above, no separate credential to manage. Unlike Firestore
+// there's no per-project database id to set - a bucket name (ATTACHMENTS_BUCKET)
+// is enough to address it.
+private val storageClient: Storage by lazy { StorageOptions.getDefaultInstance().service }
 
 // Google OAuth token exchange + userinfo calls only now - Gmail access no
 // longer goes through this client at all (IMAP instead, see
@@ -134,6 +142,14 @@ fun Application.module(
     messageStore: MessageRepository = FirestoreMessageStore(firestoreClient),
     actionItemStore: ActionItemRepository = FirestoreActionItemStore(firestoreClient),
     scanStateStore: ScanStateRepository = FirestoreScanStateStore(firestoreClient),
+    // Null (attachments dropped at pull time, no attachment context for
+    // Gemini - see InboxRoutes.kt/InboxProcessingSweep.kt) when
+    // ATTACHMENTS_BUCKET isn't set on this deployment - same "additive,
+    // not a hard gate" nullability as calendarClient. The bucket itself
+    // still needs the runtime service account granted Storage Object Admin
+    // on it (a one-time manual step - see context.md's "Email attachments"
+    // section), same shape as Calendar's service-account-sharing step.
+    attachmentStore: AttachmentRepository? = System.getenv("ATTACHMENTS_BUCKET")?.let { GcsAttachmentStore(storageClient, it) },
     notificationStateStore: NotificationStateRepository = FirestoreNotificationStateStore(firestoreClient),
     // Overridable only so tests don't have to sleep the real default - see
     // InboxRoutes.kt's doc comment on the default value.
@@ -212,7 +228,7 @@ fun Application.module(
         // shared-secret header instead (see internalSyncRoutes' doc comment).
         internalSyncRoutes(
             userStore, gmailClient, geminiClient, calendarClient, settingsStore,
-            messageStore, actionItemStore, scanStateStore, allowedEmails, internalSyncSecret
+            messageStore, actionItemStore, scanStateStore, attachmentStore, allowedEmails, internalSyncSecret
         )
         internalNotifyRoutes(
             userStore, messageStore, actionItemStore, notificationStateStore,
@@ -222,7 +238,7 @@ fun Application.module(
         authenticate(USER_SESSION_PROVIDER_NAME) {
             inboxRoutes(
                 userStore, gmailClient, geminiClient, calendarClient, calendarServiceAccountEmail, settingsStore,
-                messageStore, actionItemStore, scanStateStore,
+                messageStore, actionItemStore, scanStateStore, attachmentStore,
                 backgroundScope, inboxProcessDebounceMs, inboxPullDebounceMs, inboxResyncCooldownMs,
                 vapidPublicKey
             )

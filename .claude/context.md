@@ -593,24 +593,16 @@ another pull, turning "check once, then settle" into an infinite
 checking/reloading loop that never shows a fully-settled page. A user's
 very first pull this process lifetime always bypasses the cooldown.
 
-**Gmail deep links back to the original email (decided).** `EmailMessage`
-carries `scannedByEmail` (`MessageStore.kt`) — the household account whose
-mailbox `pullAndStoreNewMessages` fetched it from (`User.email`, threaded
-through as `EmailMessage.id`'s sibling field). `EmailMessage.gmailSearchLink()`
-builds `https://mail.google.com/mail/u/0/#search/rfc822msgid:<encoded id>`
-from the already-stored Message-ID — no new IMAP fetch (e.g. Gmail's
-`X-GM-MSGID` extension, which plain `jakarta.mail` doesn't expose anyway),
-just a pure function of data already captured. Gmail links are inherently
-account-scoped (no URL opens an email independent of which Google account is
-signed in), and per the cross-mailbox dedup note above, the same email
-delivered to both parents gets a *different* Message-ID in each mailbox — so
-`InboxRoutes.kt`'s `gmailLinkFor(currentUserEmail)` only renders the link
-when it matches the signed-in user's own `scannedByEmail`, never for a
-message pulled by the other account (rendered as "Open in Gmail" next to the
-action item / Other updates / Couldn't-process rows in `inbox.ftl` and
-`dismissed.ftl`). Blank `scannedByEmail` (any doc written before this field
-existed) means no link for anyone, rather than guessing which account it
-came from.
+**SUPERSEDED: Gmail deep links back to the original email.** Originally
+`EmailMessage.gmailSearchLink()` built a
+`https://mail.google.com/mail/u/0/#search/rfc822msgid:<encoded id>` link
+back to Gmail, gated (`gmailLinkFor(currentUserEmail)`) to only render for
+whoever's own mailbox (`scannedByEmail`) a message was pulled from — a Gmail
+Message-ID is per-mailbox, so the same email delivered to both parents got a
+different id in each one, and the link was silently dead for the *other*
+account on every shared email. Replaced entirely by storing the full
+message in-app instead of linking out — see "Email attachments + in-app
+full-email view" below for what replaced it and why.
 
 **Action items are first-class** (`ActionItemStore.kt`), not nested inside
 the message: their own top-level `actionItems` Firestore collection, schema
@@ -680,6 +672,68 @@ computes `since` as the earliest point any configured sender still needs
 scanning from (`min` across each sender's watermark-or-lookback-fallback),
 issuing one IMAP search covering every sender in that single window.
 
+## Email attachments + in-app full-email view (decided, live)
+
+Replaces the old Gmail-deep-link approach above with two related pieces:
+pulling a school email's attachments (permission slips, forms) so Gemini can
+read them too, and storing/viewing the full email in-app instead of linking
+out to Gmail at all.
+
+**Attachments are captured at pull time.** `ImapGmailClient.toGmailMessage`
+(`GmailClient.kt`) walks the MIME tree for any part with a filename that
+isn't the `text/plain`/`text/html` body itself (`extractAttachments`) —
+covers both `Part.ATTACHMENT` and an `Part.INLINE` part that still carries a
+filename, since real senders are inconsistent about setting disposition at
+all. Capped at `MAX_IMPORT_FILE_BYTES` per attachment (the same constant the
+photo-import upload already uses — "reject something absurd, not a real
+capacity limit for a two-person app").
+
+**Cloud Storage holds the bytes, Firestore holds metadata only.**
+`AttachmentStore.kt`'s `AttachmentRepository` (`GcsAttachmentStore` backing
+it) is a dumb upload/download-by-path interface — Firestore documents cap
+out at 1MiB, a bad fit for a PDF/photo, so raw bytes never touch Firestore.
+`pullAndStoreNewMessages` (`InboxRoutes.kt`) uploads each attachment to
+`messages/<messageId>/<index>-<filename>` and stores the resulting
+`StoredAttachment(filename, contentType, size, storagePath)` on
+`EmailMessage.attachments` (`MessageStore.kt`). Nullable
+`attachmentStore: AttachmentRepository?`, wired from `ATTACHMENTS_BUCKET`
+(`Application.kt`) — same "additive, not a hard gate" nullability as
+`calendarClient`: unset means attachments are silently dropped at pull time,
+not an error. The bucket itself needs the Cloud Run runtime service account
+granted **Storage Object Admin** on it — a one-time manual step, same shape
+as Calendar's "share your calendar with the service account" step, and
+easy to forget on a fresh deploy since nothing fails loudly without it.
+
+**Gemini reads image/PDF attachments alongside the email body.**
+`GeminiClient.extract` (`GeminiClient.kt`) grew an `attachments:
+List<ExtractionAttachment>` parameter, sent as additional `inlineData` parts
+in the same `generateContent` request — the same mechanism
+`extractCalendarEventsFromImage` already uses for a single photo, just
+potentially several in one request here. `InboxProcessingSweep.kt`'s
+`attachmentsForExtraction` re-downloads only `image/*`/`application/pdf`
+attachments from Cloud Storage before calling `extract` (a `.docx`
+attachment isn't handled — no `extractCalendarEventsFromText`-equivalent
+local-text-extraction path exists for a plain email's attachments, unlike
+the photo-import upload). The prompt only mentions attachments when at
+least one is present, framed as "sometimes the actual form/date is only in
+the attachment, not the email body" — the same real-world pattern that
+motivated pulling them at all.
+
+**The full email is viewable in-app instead of linking to Gmail.** `GET
+/inbox/messages/{id}` (`InboxRoutes.kt`, `message.ftl`) renders subject,
+from, date, the stored `bodyText`, and a download link per attachment —
+works for either household account regardless of `scannedByEmail`, unlike
+the Gmail link it replaced. `GET /inbox/messages/{id}/attachments/{index}`
+streams one attachment back out of Cloud Storage by its position in
+`EmailMessage.attachments` (stable — attachments are only ever written once
+at pull time, never reordered). Every "View email" link in `inbox.ftl`/
+`dismissed.ftl` runs the message id through FreeMarker's `?url('UTF-8')`
+built-in before interpolating it into the `href`/form `action` — a real
+Gmail Message-ID looks like `<some-id@mail.gmail.com>`, and without encoding
+those characters would land in the HTML attribute unescaped-for-URL-purposes
+(HTML output escaping and URL percent-encoding are different concerns; see
+`CLAUDE.md` if this class of bug needs re-diagnosing elsewhere).
+
 ## Configuration reference
 
 - **Backend**: `backend/` — Kotlin/Ktor, FreeMarker templates
@@ -723,7 +777,13 @@ issuing one IMAP search covering every sender in that single window.
   both routes always 401), `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` /
   `VAPID_SUBJECT` (Web Push — see below; the first two absent entirely means
   notifications are off for that deployment, same nullable-and-quiet
-  pattern as Calendar).
+  pattern as Calendar), `ATTACHMENTS_BUCKET` (Cloud Storage bucket name for
+  email attachments — see "Email attachments + in-app full-email view"
+  above; absent means attachments are dropped at pull time, same
+  nullable-and-quiet pattern as Calendar/Web Push. The bucket itself must
+  exist and the Cloud Run runtime service account must be granted **Storage
+  Object Admin** on it — not automatic, a one-time manual step like
+  Calendar's service-account-sharing step).
 - **Firestore database**: created and confirmed working — real sign-in on
   the deployed Cloud Run service has round-tripped through
   `FirestoreUserStore` successfully. Database id/region weren't

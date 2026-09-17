@@ -43,6 +43,17 @@ dependencies {
     // request via the existing Ktor HttpClient - this library is only for
     // minting the bearer token.
     implementation("com.google.auth:google-auth-library-oauth2-http:1.33.1")
+    // Backs AttachmentStore.kt's GcsAttachmentStore - email attachments (PDFs/
+    // images pulled off a school email, see GmailClient.kt's EmailAttachment)
+    // are stored here rather than in Firestore: Firestore documents cap out at
+    // 1MiB, a bad fit for binary blobs, and this is the same GCP project
+    // Firestore already lives in. Uses the same ADC-based auth as
+    // firestoreClient (Application.kt's storageClient) - no separate
+    // credentials to manage, just a bucket the runtime service account needs
+    // Storage Object Admin on (one-time manual step, same shape as Calendar's
+    // service-account-sharing step - see context.md's "Email attachments"
+    // section).
+    implementation("com.google.cloud:google-cloud-storage:2.73.0")
     // Word-document (.docx) text extraction for the photo-import FAB's
     // "Choose a file" option (InboxRoutes.kt's extractDocxText) - Gemini's
     // generateContent doesn't accept docx as inlineData the way it does

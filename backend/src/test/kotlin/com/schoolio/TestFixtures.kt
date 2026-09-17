@@ -103,6 +103,21 @@ class FakeGmailClient(private val messages: List<GmailMessage> = emptyList()) : 
     }
 }
 
+// In-memory stand-in for GcsAttachmentStore - a plain map keyed by
+// storagePath, same "no real GCP call in tests" reasoning as
+// FakeMessageRepository standing in for FirestoreMessageStore.
+class FakeAttachmentStore : AttachmentRepository {
+    private val blobs = mutableMapOf<String, ByteArray>()
+    val uploaded = mutableListOf<String>()
+
+    override suspend fun upload(storagePath: String, contentType: String, bytes: ByteArray) {
+        blobs[storagePath] = bytes
+        uploaded.add(storagePath)
+    }
+
+    override suspend fun download(storagePath: String): ByteArray? = blobs[storagePath]
+}
+
 class FakeCalendarClient(private var events: List<CalendarEvent> = emptyList()) : CalendarClient {
     // Lets a test change what the "calendar" returns between two pulls (e.g.
     // simulating the school retitling/rescheduling an event) without
@@ -151,6 +166,7 @@ class FakeMessageRepository : MessageRepository {
     private val messages = mutableMapOf<String, EmailMessage>()
 
     override suspend fun getAll(): List<EmailMessage> = messages.values.sortedByDescending { it.receivedAt }
+    override suspend fun get(id: String): EmailMessage? = messages[id]
     override suspend fun getPending(): List<EmailMessage> = messages.values.filter { it.status == MessageStatus.PENDING }
 
     override suspend fun storeIfAbsent(message: EmailMessage) {
@@ -243,9 +259,15 @@ class FakeGeminiClient(
         private set
     var lastDocumentText: String? = null
         private set
+    // Lets a test prove attachments actually reached the extraction call
+    // (see InboxProcessingSweep.kt's attachmentsForExtraction), same purpose
+    // lastImageBytesSize/lastImageMimeType serve for the photo-import path.
+    var lastAttachmentCount: Int? = null
+        private set
 
-    override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
+    override suspend fun extract(subject: String, from: String, bodyText: String, attachments: List<ExtractionAttachment>): EmailExtraction {
         extractedSubjects.add(subject)
+        lastAttachmentCount = attachments.size
         return extraction
     }
 
@@ -360,6 +382,10 @@ fun ApplicationTestBuilder.testModule(
     messageStore: MessageRepository = FakeMessageRepository(),
     actionItemStore: ActionItemRepository = FakeActionItemRepository(),
     scanStateStore: ScanStateRepository = FakeScanStateRepository(),
+    // Non-null by default (unlike the real module()'s "unset env var" default)
+    // so most tests exercise the attachment upload/extraction path too - pass
+    // null explicitly to test the "ATTACHMENTS_BUCKET not configured" case.
+    attachmentStore: AttachmentRepository? = FakeAttachmentStore(),
     // Most tests want the pull and processing steps to happen practically
     // immediately rather than waiting out the real production debounces -
     // see awaitMessagesProcessed's doc comment for how a test then observes
@@ -401,6 +427,7 @@ fun ApplicationTestBuilder.testModule(
             messageStore = messageStore,
             actionItemStore = actionItemStore,
             scanStateStore = scanStateStore,
+            attachmentStore = attachmentStore,
             notificationStateStore = notificationStateStore,
             inboxProcessDebounceMs = inboxProcessDebounceMs,
             inboxPullDebounceMs = inboxPullDebounceMs,

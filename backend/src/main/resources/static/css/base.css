@@ -391,6 +391,24 @@ h1, h2, h3 {
     margin-bottom: 0.5rem;
 }
 
+/* GET /inbox/messages/{id} - the full-email view replacing the old Gmail
+   deep link. white-space: pre-wrap preserves a plain-text email's own line
+   breaks (bodyText has no HTML of its own to render) without needing a
+   <pre> block's monospace font. */
+.message-body {
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+.attachment-list {
+    list-style: none;
+    padding: 0;
+}
+
+.attachment-list li {
+    margin-bottom: 0.4rem;
+}
+
 .date-group {
     margin-bottom: 1.5rem;
 }
