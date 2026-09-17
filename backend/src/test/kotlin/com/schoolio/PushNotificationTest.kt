@@ -190,5 +190,49 @@ class PushNotificationTest {
         assertNull(userStore.find(TEST_SUB)?.pushSubscription)
     }
 
+    @Test
+    fun testForceSendsEvenWithNothingDueTodayAndDoesNotRecordState() = testApplication {
+        val webPushSender = FakeWebPushSender()
+        val userStore = FakeUserRepository()
+        val notificationStateStore = FakeNotificationStateRepository()
+        testModule(
+            userStore = userStore, internalSyncSecret = "s", webPushSender = webPushSender,
+            notificationStateStore = notificationStateStore, allowedEmails = setOf(TEST_EMAIL)
+        )
+        userStore.findOrCreateByGoogle(TEST_SUB, TEST_EMAIL, TEST_NAME)
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/id", "p", "a"))
+        // No action items at all - the real path would no-op here.
+
+        val response = client.post("/internal/notify-daily?force=true") { header("X-Internal-Sync-Secret", "s") }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(1, webPushSender.sent.size)
+        assertTrue(webPushSender.sent.single().body.contains("Test notification"))
+        // A forced send is a test ping, not today's real digest - it must
+        // not suppress the actual scheduled one later that day.
+        assertNull(notificationStateStore.getLastDailyDigestDate())
+    }
+
+    @Test
+    fun testForceBypassesAlreadySentTodayGuard() = testApplication {
+        val webPushSender = FakeWebPushSender()
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.addAll(listOf(ActionItem(title = "Field trip form", description = "Sign", date = todayString())))
+        val notificationStateStore = FakeNotificationStateRepository()
+        notificationStateStore.recordDailyDigestSent(todayString())
+        testModule(
+            userStore = userStore, actionItemStore = actionItemStore, internalSyncSecret = "s", webPushSender = webPushSender,
+            notificationStateStore = notificationStateStore, allowedEmails = setOf(TEST_EMAIL)
+        )
+        userStore.findOrCreateByGoogle(TEST_SUB, TEST_EMAIL, TEST_NAME)
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/id", "p", "a"))
+
+        val response = client.post("/internal/notify-daily?force=true") { header("X-Internal-Sync-Secret", "s") }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(1, webPushSender.sent.size)
+    }
+
     private fun todayString(): String = java.time.LocalDate.now(HOUSEHOLD_ZONE).toString()
 }

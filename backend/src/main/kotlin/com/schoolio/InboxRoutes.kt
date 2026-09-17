@@ -736,9 +736,20 @@ fun Route.internalNotifyRoutes(
             return@post
         }
 
+        // ?force=true bypasses the two guards below (already-sent-today,
+        // nothing-due-today) - for manually proving delivery actually works
+        // end to end (gcloud scheduler jobs run only re-fires the job's
+        // configured URI, so this is a query param the maintainer appends
+        // by hand via curl, not something the real daily job's URI carries)
+        // without needing real due-today data or a Firestore edit to clear
+        // the dedup guard. A forced send deliberately skips
+        // recordDailyDigestSent below too - it's a test ping, not today's
+        // real digest, so it must not suppress the actual one.
+        val force = call.request.queryParameters["force"] == "true"
+
         val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
         val lastSent = notificationStateStore.getLastDailyDigestDate()
-        if (lastSent == today) {
+        if (!force && lastSent == today) {
             // Already sent today's digest - a Cloud Scheduler retry or an
             // accidental second trigger shouldn't ping the household twice.
             logger.info("Daily digest: no-op, already sent today ({})", today)
@@ -753,7 +764,7 @@ fun Route.internalNotifyRoutes(
         val todayCount = actionItemStore.getAll().count { item ->
             !item.dismissed && item.dateKeyAndTime(item.sourceMessageId?.let { messagesById[it] }).first == today
         }
-        if (todayCount == 0) {
+        if (!force && todayCount == 0) {
             // Nothing due today - "only if there's something that day" (see
             // current.md). Deliberately doesn't record a sent date here:
             // that field means "a digest went out today," not "we checked."
@@ -763,7 +774,12 @@ fun Route.internalNotifyRoutes(
         }
 
         val title = "What's going on today"
-        val body = if (todayCount == 1) "1 thing needs your attention today." else "$todayCount things need your attention today."
+        val body = when {
+            todayCount == 1 -> "1 thing needs your attention today."
+            todayCount > 1 -> "$todayCount things need your attention today."
+            else -> "Test notification - nothing is actually due today, this is a forced test send."
+        }
+        if (force) logger.info("Daily digest: forced send ({} due today, ignoring dedup/nothing-due guards)", todayCount)
         var subscribedCount = 0
         for (email in allowedEmails) {
             val subscription = userStore.findByEmail(email)?.pushSubscription
@@ -790,7 +806,7 @@ fun Route.internalNotifyRoutes(
             }
         }
         logger.info("Daily digest: {} due today, {} of {} allowed accounts subscribed", todayCount, subscribedCount, allowedEmails.size)
-        notificationStateStore.recordDailyDigestSent(today)
+        if (!force) notificationStateStore.recordDailyDigestSent(today)
         call.respond(HttpStatusCode.OK)
     }
 }
