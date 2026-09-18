@@ -68,6 +68,14 @@ data class PushSubscriptionKeys(val p256dh: String, val auth: String)
 @Serializable
 data class PushSubscriptionRequest(val endpoint: String, val keys: PushSubscriptionKeys)
 
+// POST /push/unsubscribe's body - the endpoint identifies which of this
+// user's (possibly several, one per device) subscriptions to drop. Without
+// it the server has no way to tell "the phone unsubscribed" from "the
+// Chromebook unsubscribed" apart, since both share the same signed-in
+// account.
+@Serializable
+data class PushUnsubscribeRequest(val endpoint: String)
+
 data class PushSubscription(val endpoint: String, val p256dh: String, val auth: String)
 
 sealed interface PushSendResult {
@@ -130,22 +138,6 @@ class LibraryWebPushSender(
                 .payload(payload)
                 .ttl(Duration.ofHours(24).seconds.toInt())
                 .build()
-            // AESGCM's own Crypto-Key header turned out to be genuinely
-            // malformed (both its dh= and p256ecdsa= values carry a
-            // standard-base64 padding "=" the spec/FCM require to be
-            // absent) - a real bug in this library's older-encoding header
-            // construction, unrelated to anything on our side, and not
-            // worth pursuing further. Back to AES128GCM (the one we
-            // actually want), but this time dumping every header rather
-            // than just the two (Content-Encoding, Authorization) an
-            // earlier pass checked - that partial check is exactly what
-            // let AESGCM's analogous bug hide as "looks fine" for as long
-            // as it did.
-            runCatching {
-                val diagnosticRequest = pushService.preparePost(notification, Encoding.AES128GCM)
-                val headerDump = diagnosticRequest.allHeaders.joinToString("; ") { "${it.name}=${it.value}" }
-                logger.info("Daily digest diagnostic: AES128GCM request headers: {}", headerDump)
-            }.onFailure { logger.warn("Daily digest diagnostic: failed to build inspection request", it) }
             val response = pushService.send(notification, Encoding.AES128GCM)
             when (val status = response.statusLine.statusCode) {
                 200, 201, 202 -> PushSendResult.Sent

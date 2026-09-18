@@ -578,7 +578,6 @@ fun Route.inboxRoutes(
                     "hasAppPassword" to (user?.gmailAppPassword != null),
                     "calendarServiceAccountEmail" to calendarServiceAccountEmail,
                     "vapidPublicKey" to vapidPublicKey,
-                    "hasPushSubscription" to (user?.pushSubscription != null),
                     "activeNav" to "settings"
                 ) + call.currentUserModel()
             )
@@ -658,7 +657,8 @@ fun Route.inboxRoutes(
 
     post("/push/unsubscribe") {
         val userId = call.requireUserId()
-        userStore.clearPushSubscription(userId)
+        val request = call.receive<PushUnsubscribeRequest>()
+        userStore.removePushSubscription(userId, request.endpoint)
         call.respond(HttpStatusCode.OK)
     }
 }
@@ -836,27 +836,32 @@ fun Route.internalNotifyRoutes(
         if (force) logger.info("Daily digest: forced send ({} due today, ignoring dedup/nothing-due guards)", todayCount)
         var subscribedCount = 0
         for (email in allowedEmails) {
-            val subscription = userStore.findByEmail(email)?.pushSubscription
-            if (subscription == null) {
+            val user = userStore.findByEmail(email)
+            if (user == null || user.pushSubscriptions.isEmpty()) {
                 logger.info("Daily digest: no push subscription stored for {}, skipping", email)
                 continue
             }
             subscribedCount++
-            try {
-                when (val result = webPushSender.send(subscription, title, body, "/inbox")) {
-                    PushSendResult.Sent -> logger.info("Daily digest: sent to {}", email)
-                    PushSendResult.Gone -> {
-                        // The push service has permanently discarded this
-                        // subscription - clear it so future digests don't
-                        // keep failing the same way for this account.
-                        logger.info("Daily digest: subscription for {} is gone (404/410), clearing it", email)
-                        val userId = userStore.findByEmail(email)?.id
-                        if (userId != null) userStore.clearPushSubscription(userId)
+            // One subscription per device this account has enabled
+            // notifications on - send to all of them, not just the first,
+            // so the digest actually reaches every device, not just
+            // whichever one subscribed most recently.
+            for (subscription in user.pushSubscriptions) {
+                try {
+                    when (val result = webPushSender.send(subscription, title, body, "/inbox")) {
+                        PushSendResult.Sent -> logger.info("Daily digest: sent to {}", email)
+                        PushSendResult.Gone -> {
+                            // The push service has permanently discarded this
+                            // one subscription - remove just it, not this
+                            // account's other devices.
+                            logger.info("Daily digest: a subscription for {} is gone (404/410), clearing it", email)
+                            userStore.removePushSubscription(user.id, subscription.endpoint)
+                        }
+                        is PushSendResult.Failed -> logger.warn("Daily digest push failed for {} with status {}: {}", email, result.status, result.body)
                     }
-                    is PushSendResult.Failed -> logger.warn("Daily digest push failed for {} with status {}: {}", email, result.status, result.body)
+                } catch (e: Exception) {
+                    logger.warn("Daily digest push threw for {}", email, e)
                 }
-            } catch (e: Exception) {
-                logger.warn("Daily digest push threw for {}", email, e)
             }
         }
         logger.info("Daily digest: {} due today, {} of {} allowed accounts subscribed", todayCount, subscribedCount, allowedEmails.size)

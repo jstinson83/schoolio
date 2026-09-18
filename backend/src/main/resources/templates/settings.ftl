@@ -51,9 +51,13 @@
                     On iOS, add Schoolio to your home screen first (Share &rarr; Add to Home Screen), then open it from
                     there.</p>
                 <p>Get a once-daily notification in the morning, only on days something's due.</p>
+                <#-- data-subscribed starts false regardless of server state - "subscribed" now means
+                     "this device", which the server can't know at render time since an account's
+                     subscriptions live per-device (see UserStore.kt's pushSubscriptions). app.js
+                     corrects this against the browser's own PushManager.getSubscription() on load. -->
                 <button type="button" id="notifyToggle" class="btn btn-primary" data-vapid-key="${vapidPublicKey}"
-                    data-subscribed="${hasPushSubscription?c}">
-                    <#if hasPushSubscription>Disable notifications<#else>Enable notifications</#if>
+                    data-subscribed="false">
+                    Enable notifications
                 </button>
                 <p id="notifyError" class="field-hint" hidden></p>
             <#else>

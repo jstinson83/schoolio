@@ -334,3 +334,23 @@ hit the same way.
   so wouldn't get restored on the next deploy either. Always use
   `--update-env-vars` when adding/changing one env var on an existing
   deployment.
+- **Web Push subscriptions are one-per-device, not one-per-account - a
+  single nullable field for it is a real bug, not just a simplification.**
+  `User.pushSubscription` was originally a single `PushSubscription?`
+  (`UserStore.kt`), and `POST /push/subscribe` just overwrote it - so
+  enabling notifications on a phone, then later on a Chromebook, silently
+  discarded the phone's subscription with no error anywhere. Hit for real:
+  notifications worked on one device, "enabled" successfully on the other,
+  and still never arrived there - not a delivery bug, the daily digest send
+  loop was only ever sending to whichever device subscribed most recently.
+  Fixed by making it `pushSubscriptions: List<PushSubscription>`, keyed by
+  `endpoint` (each device/browser's subscription has its own distinct push-
+  service URL) - `savePushSubscription` upserts by endpoint,
+  `removePushSubscription` (was `clearPushSubscription`) takes an endpoint
+  and drops only that one device. `POST /push/unsubscribe` now needs a body
+  (`{"endpoint": "..."}`, the browser's own current subscription) instead of
+  taking none, since the server can no longer tell "which device" apart
+  without it. Same shape as any future per-user, per-device data this app
+  adds - a household/multi-account app almost always means multi-device per
+  account too, so a single nullable field for "the" anything scoped to a
+  device is worth double-checking before assuming it's fine.

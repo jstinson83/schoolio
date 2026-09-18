@@ -381,6 +381,16 @@ if ('serviceWorker' in navigator) {
     button.textContent = subscribed ? 'Disable notifications' : 'Enable notifications';
   }
 
+  // The button starts rendered as "Enable notifications" (see settings.ftl)
+  // since the server can't know per-device subscription state at render
+  // time - an account's subscriptions live one-per-device now (UserStore.kt's
+  // pushSubscriptions), not a single yes/no. Correct it against this
+  // browser's own subscription once the service worker's ready.
+  navigator.serviceWorker.ready
+    .then((registration) => registration.pushManager.getSubscription())
+    .then((existing) => setSubscribed(!!existing))
+    .catch(() => {});
+
   button.addEventListener('click', async () => {
     button.disabled = true;
     if (errorNotice) errorNotice.hidden = true;
@@ -388,8 +398,22 @@ if ('serviceWorker' in navigator) {
       const registration = await navigator.serviceWorker.ready;
       if (button.dataset.subscribed === 'true') {
         const existing = await registration.pushManager.getSubscription();
-        if (existing) await existing.unsubscribe();
-        const response = await fetch('/push/unsubscribe', { method: 'POST' });
+        if (!existing) {
+          // Nothing locally to unsubscribe (permission was revoked outside
+          // the app, or this browser never actually held a subscription) -
+          // there's no endpoint to tell the server to remove, so just
+          // correct the button rather than calling /push/unsubscribe with
+          // nothing to identify.
+          setSubscribed(false);
+          return;
+        }
+        const endpoint = existing.endpoint;
+        await existing.unsubscribe();
+        const response = await fetch('/push/unsubscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint })
+        });
         // fetch() only rejects on a network failure, never on a non-2xx
         // status - without this check, a failed server-side clear (session
         // expired, a 500, ...) still flips the button to "disabled" even
