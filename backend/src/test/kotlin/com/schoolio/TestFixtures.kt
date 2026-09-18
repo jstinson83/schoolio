@@ -45,11 +45,14 @@ class FakeUserRepository : UserRepository {
     }
 
     override suspend fun savePushSubscription(id: String, subscription: PushSubscription) {
-        usersById[id]?.let { usersById[id] = it.copy(pushSubscription = subscription) }
+        usersById[id]?.let {
+            val updated = it.pushSubscriptions.filterNot { existing -> existing.endpoint == subscription.endpoint } + subscription
+            usersById[id] = it.copy(pushSubscriptions = updated)
+        }
     }
 
-    override suspend fun clearPushSubscription(id: String) {
-        usersById[id]?.let { usersById[id] = it.copy(pushSubscription = null) }
+    override suspend fun removePushSubscription(id: String, endpoint: String) {
+        usersById[id]?.let { usersById[id] = it.copy(pushSubscriptions = it.pushSubscriptions.filterNot { existing -> existing.endpoint == endpoint }) }
     }
 }
 

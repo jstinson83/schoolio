@@ -25,8 +25,8 @@ class PushNotificationTest {
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
-        val stored = userStore.find(TEST_SUB)?.pushSubscription
-        assertEquals(PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value"), stored)
+        val stored = userStore.find(TEST_SUB)?.pushSubscriptions
+        assertEquals(listOf(PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value")), stored)
     }
 
     // Regression test: a real browser's PushSubscription.toJSON() includes
@@ -54,8 +54,8 @@ class PushNotificationTest {
 
         assertEquals(HttpStatusCode.OK, response.status)
         assertEquals(
-            PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value"),
-            userStore.find(TEST_SUB)?.pushSubscription
+            listOf(PushSubscription("https://push.example.com/id", "p256dh-value", "auth-value")),
+            userStore.find(TEST_SUB)?.pushSubscriptions
         )
     }
 
@@ -83,10 +83,38 @@ class PushNotificationTest {
         val client = signInFakeUser()
         userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/id", "p", "a"))
 
-        val response = client.post("/push/unsubscribe")
+        val response = client.post("/push/unsubscribe") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"endpoint":"https://push.example.com/id"}""")
+        }
 
         assertEquals(HttpStatusCode.OK, response.status)
-        assertNull(userStore.find(TEST_SUB)?.pushSubscription)
+        assertEquals(emptyList<PushSubscription>(), userStore.find(TEST_SUB)?.pushSubscriptions)
+    }
+
+    // Multi-device regression test: the same account subscribed from two
+    // different devices (distinct endpoints) used to silently clobber each
+    // other under the old single-subscription-field design - only the
+    // most-recently-subscribed device ever got notified, and unsubscribing
+    // on one device wiped out the other's subscription too.
+    @Test
+    fun testUnsubscribeOnlyRemovesTheMatchingDevice() = testApplication {
+        val userStore = FakeUserRepository()
+        testModule(userStore = userStore)
+        val client = signInFakeUser()
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/phone", "p1", "a1"))
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/chromebook", "p2", "a2"))
+
+        val response = client.post("/push/unsubscribe") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"endpoint":"https://push.example.com/phone"}""")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(
+            listOf(PushSubscription("https://push.example.com/chromebook", "p2", "a2")),
+            userStore.find(TEST_SUB)?.pushSubscriptions
+        )
     }
 
     @Test
@@ -187,7 +215,29 @@ class PushNotificationTest {
         val response = client.post("/internal/notify-daily") { header("X-Internal-Sync-Secret", "s") }
 
         assertEquals(HttpStatusCode.OK, response.status)
-        assertNull(userStore.find(TEST_SUB)?.pushSubscription)
+        assertEquals(emptyList<PushSubscription>(), userStore.find(TEST_SUB)?.pushSubscriptions)
+    }
+
+    @Test
+    fun testInternalNotifyDailySendsToEveryDeviceForOneAccount() = testApplication {
+        val webPushSender = FakeWebPushSender()
+        val userStore = FakeUserRepository()
+        val actionItemStore = FakeActionItemRepository()
+        actionItemStore.addAll(listOf(ActionItem(title = "Field trip form", description = "Sign", date = todayString())))
+        testModule(
+            userStore = userStore, actionItemStore = actionItemStore, internalSyncSecret = "s", webPushSender = webPushSender,
+            allowedEmails = setOf(TEST_EMAIL)
+        )
+        userStore.findOrCreateByGoogle(TEST_SUB, TEST_EMAIL, TEST_NAME)
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/phone", "p1", "a1"))
+        userStore.savePushSubscription(TEST_SUB, PushSubscription("https://push.example.com/chromebook", "p2", "a2"))
+
+        val response = client.post("/internal/notify-daily") { header("X-Internal-Sync-Secret", "s") }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(2, webPushSender.sent.size)
+        val endpoints = webPushSender.sent.map { it.subscription.endpoint }.toSet()
+        assertEquals(setOf("https://push.example.com/phone", "https://push.example.com/chromebook"), endpoints)
     }
 
     @Test
