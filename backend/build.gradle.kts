@@ -16,6 +16,25 @@ repositories {
     mavenCentral()
 }
 
+// io.ktor.plugin's buildFatJar task wraps the Shadow plugin's shadowJar task
+// under the hood, whose default behavior for a resource path that exists in
+// more than one jar is to just keep one copy and silently drop the rest -
+// mergeServiceFiles() switches that to concatenating same-path
+// META-INF/services/* files across every jar instead. Without this, adding
+// google-cloud-storage alongside google-cloud-firestore broke Firestore in
+// production (`Could not find policy 'pick_first'`) purely because both
+// pull in several io.grpc:grpc-* jars that each ship their own
+// META-INF/services/io.grpc.LoadBalancerProvider, and only one survived the
+// merge - see CLAUDE.md's gotcha for the full story. This makes the merge
+// itself correct going forward regardless of which grpc-touching dependency
+// gets added next; build.gradle.kts's exclusions on google-cloud-storage
+// (below) additionally avoid pulling in gRPC modules this app doesn't use
+// at all, but that alone wouldn't protect a future dependency from hitting
+// the same class of bug without this.
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    mergeServiceFiles()
+}
+
 dependencies {
     implementation("io.ktor:ktor-server-core-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
@@ -52,8 +71,28 @@ dependencies {
     // credentials to manage, just a bucket the runtime service account needs
     // Storage Object Admin on (one-time manual step, same shape as Calendar's
     // service-account-sharing step - see context.md's "Email attachments"
-    // section).
-    implementation("com.google.cloud:google-cloud-storage:2.73.0")
+    // section). Excludes google-cloud-storage's optional gRPC transport
+    // (grpc-google-cloud-storage-v2 and everything it pulls in - grpc-xds,
+    // grpc-alts, grpc-googleapis, grpc-grpclb) - GcsAttachmentStore never
+    // touches it (StorageOptions.getDefaultInstance() uses the plain HTTP/
+    // JSON transport, the only path this app calls), and its presence broke
+    // real Firestore access in production: multiple grpc-* jars each ship
+    // their own META-INF/services/io.grpc.LoadBalancerProvider file, Ktor's
+    // buildFatJar doesn't merge same-path resources across jars (it just
+    // keeps one, dropping the rest), and grpc-core's own file - the one
+    // listing PickFirstLoadBalancerProvider - was the one that got dropped.
+    // Symptom was `Could not find policy 'pick_first'` out of
+    // FirestoreNotificationStateStore, nothing storage-related at all - see
+    // CLAUDE.md's deploy gotchas for the full story if this class of bug
+    // needs re-diagnosing after a future dependency bump.
+    implementation("com.google.cloud:google-cloud-storage:2.73.0") {
+        exclude(group = "com.google.api.grpc", module = "grpc-google-cloud-storage-v2")
+        exclude(group = "com.google.api.grpc", module = "gapic-google-cloud-storage-v2")
+        exclude(group = "io.grpc", module = "grpc-xds")
+        exclude(group = "io.grpc", module = "grpc-alts")
+        exclude(group = "io.grpc", module = "grpc-googleapis")
+        exclude(group = "io.grpc", module = "grpc-grpclb")
+    }
     // Word-document (.docx) text extraction for the photo-import FAB's
     // "Choose a file" option (InboxRoutes.kt's extractDocxText) - Gemini's
     // generateContent doesn't accept docx as inlineData the way it does
