@@ -3,7 +3,6 @@ package com.schoolio
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
-import java.net.URLEncoder
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Date
@@ -60,37 +59,43 @@ data class EmailMessage(
     // failureReason, never the content fields.
     val contentHash: String = emailContentHash(from, subject, bodyText),
     // Which household account's mailbox this was pulled from (User.email -
-    // see InboxRoutes.pullAndStoreNewMessages) - a Gmail deep link back to
-    // the original message (see gmailSearchLink below) only resolves for
-    // whoever's signed into *this* account, since the same email delivered
-    // to both parents' mailboxes gets a different Message-ID in each one
-    // (see emailContentHash's doc comment above) and Gmail has no
-    // account-agnostic message URL. Blank for any doc written before this
-    // field existed - InboxRoutes treats that the same as "don't show a
-    // link" rather than guessing which account it came from.
-    val scannedByEmail: String = ""
+    // see InboxRoutes.pullAndStoreNewMessages). No longer used for a Gmail
+    // deep link (see attachments' own doc comment below for why that's
+    // gone) - kept as provenance metadata only, e.g. for a future feature
+    // that cares which mailbox something came from. Blank for any doc
+    // written before this field existed.
+    val scannedByEmail: String = "",
+    // The full email is now stored/viewable in-app (GET /inbox/messages/{id},
+    // InboxRoutes.kt) instead of linking out to Gmail - see this field's own
+    // history if you're wondering why there's no gmailSearchLink()-style
+    // helper here anymore: a Gmail deep link only ever worked for whichever
+    // household account's mailbox a message was pulled from (a Message-ID is
+    // per-mailbox, see scannedByEmail above), which made it silently dead for
+    // the *other* account on every shared email - a bad tradeoff against just
+    // keeping a copy of what was already being stored anyway. Raw attachment
+    // bytes live in Cloud Storage, not here (see AttachmentStore.kt) -
+    // Firestore documents cap out at 1MiB, a bad fit for a PDF/photo.
+    val attachments: List<StoredAttachment> = emptyList()
 )
 
-// Gmail's rfc822msgid: search operator matches the RFC822 Message-ID header
-// exactly, so this needs no extra IMAP fetch (e.g. the Gmail-specific
-// X-GM-MSGID extension, which plain jakarta.mail doesn't expose anyway) -
-// just the Message-ID already captured as EmailMessage.id (see
-// GmailClient.kt's toGmailMessage). Angle brackets are stripped before
-// encoding - rfc822msgid: matches the bare header value, not the
-// `<...>`-wrapped form the header is written in. Only ever meaningful when
-// opened while signed into scannedByEmail's own Gmail account (see that
-// field's doc comment) - callers (InboxRoutes) are responsible for only
-// showing this to the matching signed-in user, not for the account check
-// itself.
-fun EmailMessage.gmailSearchLink(): String =
-    "https://mail.google.com/mail/u/0/#search/rfc822msgid:" +
-        URLEncoder.encode(id.removePrefix("<").removeSuffix(">"), "UTF-8")
+// One email attachment already uploaded to Cloud Storage (AttachmentStore.kt)
+// at pull time (see InboxRoutes.kt's pullAndStoreNewMessages) - metadata only,
+// the bytes themselves are fetched from storagePath on demand (GET
+// /inbox/messages/{id}/attachments/{index}, or InboxProcessingSweep.kt's
+// re-fetch for Gemini extraction), never held in memory alongside every other
+// stored message.
+data class StoredAttachment(val filename: String, val contentType: String, val size: Long, val storagePath: String)
 
 interface MessageRepository {
     // Every stored message, most recent first - the inbox page's full list,
     // spanning every status (a still-PENDING message renders with no summary/
     // action items yet - see inbox.ftl's pending state).
     suspend fun getAll(): List<EmailMessage>
+    // Single-message lookup for GET /inbox/messages/{id} (the full-email view
+    // replacing the old Gmail deep link) - getAll() plus a find() would work
+    // too, but this lets FirestoreMessageStore do a single document read
+    // instead of pulling every stored message just to show one.
+    suspend fun get(id: String): EmailMessage?
     // What the debounced processing sweep works through - see
     // InboxRoutes.processPendingMessages.
     suspend fun getPending(): List<EmailMessage>
@@ -116,6 +121,9 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
 
     override suspend fun getAll(): List<EmailMessage> =
         collection.orderBy("receivedAt", Query.Direction.DESCENDING).get().get().documents.map { it.toEmailMessage() }
+
+    override suspend fun get(id: String): EmailMessage? =
+        collection.document(sanitizeMessageDocId(id)).get().get().takeIf { it.exists() }?.toEmailMessage()
 
     override suspend fun getPending(): List<EmailMessage> =
         collection.whereEqualTo("status", MessageStatus.PENDING.name).get().get().documents.map { it.toEmailMessage() }
@@ -175,7 +183,31 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
             // fall back to computing it the same way a fresh write would, so
             // an old doc still participates correctly in future dedup checks.
             contentHash = getString("contentHash") ?: emailContentHash(from, subject, bodyText),
-            scannedByEmail = getString("scannedByEmail") ?: ""
+            scannedByEmail = getString("scannedByEmail") ?: "",
+            // Absent entirely on a doc written before attachments existed -
+            // same "old doc just has none" fallback as contentHash above,
+            // rather than an error.
+            attachments = (get("attachments") as? List<*>)?.mapNotNull { it.toStoredAttachment() } ?: emptyList()
+        )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun Any?.toStoredAttachment(): StoredAttachment? {
+        val map = this as? Map<String, Any?> ?: return null
+        val storagePath = map["storagePath"] as? String ?: return null
+        return StoredAttachment(
+            filename = map["filename"] as? String ?: "",
+            contentType = map["contentType"] as? String ?: "application/octet-stream",
+            // A raw Firestore map (unlike the typed DocumentSnapshot accessors
+            // used elsewhere in this file) can hand back a Long here instead
+            // of the Long this field is typed as, depending on how the value
+            // was originally written - toString().toLong() normalizes either
+            // way rather than an unsafe `as Long` cast (see CLAUDE.md's
+            // Firestore raw-map-cast gotcha - this is the same family of
+            // issue as ScanStateStore's old Date cast, just Long instead of
+            // Timestamp).
+            size = (map["size"] as? Number)?.toLong() ?: 0L,
+            storagePath = storagePath
         )
     }
 
@@ -191,7 +223,10 @@ class FirestoreMessageStore(private val firestore: Firestore) : MessageRepositor
         "failureReason" to message.failureReason,
         "dismissed" to message.dismissed,
         "contentHash" to message.contentHash,
-        "scannedByEmail" to message.scannedByEmail
+        "scannedByEmail" to message.scannedByEmail,
+        "attachments" to message.attachments.map {
+            mapOf("filename" to it.filename, "contentType" to it.contentType, "size" to it.size, "storagePath" to it.storagePath)
+        }
     )
 }
 

@@ -1,5 +1,6 @@
 package com.schoolio
 
+import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
@@ -176,7 +177,7 @@ class InboxTest {
             )
         )
         val geminiClient = object : GeminiClient {
-            override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction =
+            override suspend fun extract(subject: String, from: String, bodyText: String, attachments: List<ExtractionAttachment>): EmailExtraction =
                 error("Gemini is down")
 
             override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> =
@@ -836,20 +837,20 @@ class InboxTest {
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
     }
 
-    // Only the household account that actually pulled a message from its own
-    // mailbox can open a Gmail deep link back to it (see EmailMessage.
-    // scannedByEmail's doc comment - the same email delivered to both
-    // parents gets a different Message-ID in each mailbox, and there's no
-    // account-agnostic Gmail URL) - GET /inbox must only render the "Open in
-    // Gmail" link for a message whose scannedByEmail matches whoever's
-    // actually signed in, never for one pulled by the other account.
+    // The full-email view (GET /inbox/messages/{id}) works for either
+    // household account regardless of which mailbox actually pulled the
+    // message - unlike the old Gmail deep link it replaced, which only ever
+    // resolved for scannedByEmail's own account (a Message-ID is per-mailbox,
+    // see EmailMessage.scannedByEmail's doc comment). GET /inbox links to it
+    // for a message pulled by *either* account, and the linked page renders
+    // regardless of who's signed in.
     @Test
-    fun testGmailLinkOnlyShowsForTheAccountThatScannedTheMessage() = testApplication {
+    fun testViewEmailLinkWorksRegardlessOfWhichAccountScannedTheMessage() = testApplication {
         val userStore = FakeUserRepository()
         val messageStore = FakeMessageRepository()
         messageStore.storeIfAbsent(
             EmailMessage(
-                id = "<abc123@mail.gmail.com>",
+                id = "msg-mine",
                 subject = "Scanned by me",
                 from = "school@example.com",
                 date = "Mon, 1 Sep 2026 10:00:00 -0400",
@@ -862,7 +863,7 @@ class InboxTest {
         )
         messageStore.storeIfAbsent(
             EmailMessage(
-                id = "<def456@mail.gmail.com>",
+                id = "msg-spouse",
                 subject = "Scanned by my spouse",
                 from = "school@example.com",
                 date = "Mon, 1 Sep 2026 11:00:00 -0400",
@@ -879,8 +880,52 @@ class InboxTest {
         client.awaitInboxSettled()
 
         val body = client.get("/inbox").bodyAsText()
-        assertTrue(body.contains("mail.google.com/mail/u/0/#search/rfc822msgid:abc123%40mail.gmail.com"))
-        assertFalse(body.contains("rfc822msgid:def456%40mail.gmail.com"))
+        assertTrue(body.contains("/inbox/messages/msg-mine"))
+        assertTrue(body.contains("/inbox/messages/msg-spouse"))
+
+        // Signed in as TEST_EMAIL (which only scanned msg-mine) but the
+        // *other* account's message still opens fine - no per-account gate
+        // the way the old Gmail deep link had.
+        val viewResponse = client.get("/inbox/messages/msg-spouse")
+        assertEquals(HttpStatusCode.OK, viewResponse.status)
+        assertTrue(viewResponse.bodyAsText().contains("Scanned by my spouse"))
+    }
+
+    // A real Gmail Message-ID looks like <some-id@mail.gmail.com> - the
+    // rendered link has to percent-encode it (FreeMarker's ?url built-in),
+    // or the generated href would contain literal "<"/"@"/">" characters
+    // that don't round-trip as a URL path segment.
+    @Test
+    fun testViewEmailLinkPercentEncodesAMessageIdShapedLikeARealGmailMessageId() = testApplication {
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        val rawId = "<abc123@mail.gmail.com>"
+        messageStore.storeIfAbsent(
+            EmailMessage(
+                id = rawId,
+                subject = "Scanned by me",
+                from = "school@example.com",
+                date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                bodyText = "Nothing actionable here.",
+                status = MessageStatus.PROCESSED,
+                summary = "Just a newsletter.",
+                scannedByEmail = TEST_EMAIL
+            )
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), messageStore = messageStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        val encodedId = java.net.URLEncoder.encode(rawId, "UTF-8")
+        assertTrue(body.contains("/inbox/messages/$encodedId"))
+        assertFalse(body.contains("/inbox/messages/$rawId\""))
+
+        val viewResponse = client.get("/inbox/messages/$encodedId")
+        assertEquals(HttpStatusCode.OK, viewResponse.status)
+        assertTrue(viewResponse.bodyAsText().contains("Scanned by me"))
     }
 
     // Not prominent (see nav.ftl's nav-link-subtle), but always present so
@@ -891,5 +936,88 @@ class InboxTest {
         val client = signInFakeUser()
 
         assertTrue(client.get("/inbox").bodyAsText().contains("href=\"/inbox/dismissed\""))
+    }
+
+    // End-to-end: a pulled message's attachment gets uploaded to Cloud
+    // Storage (AttachmentStore.kt) at pull time, its bytes reach Gemini for
+    // extraction (see InboxProcessingSweep.kt's attachmentsForExtraction),
+    // and it's downloadable from the full-email view afterward.
+    @Test
+    fun testMessageAttachmentIsUploadedSentToGeminiAndDownloadable() = testApplication {
+        val attachmentBytes = byteArrayOf(1, 2, 3, 4)
+        val gmailClient = FakeGmailClient(
+            listOf(
+                GmailMessage(
+                    id = "1",
+                    subject = "Field trip permission slip",
+                    from = "Ms. Rivera <teacher@school.example>",
+                    date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                    receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                    bodyText = "See the attached form.",
+                    attachments = listOf(EmailAttachment("slip.pdf", "application/pdf", attachmentBytes))
+                )
+            )
+        )
+        val geminiClient = FakeGeminiClient()
+        val attachmentStore = FakeAttachmentStore()
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        testModule(
+            userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient,
+            messageStore = messageStore, attachmentStore = attachmentStore
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        // Uploaded once at pull time, and Gemini's extract() saw it.
+        assertEquals(1, attachmentStore.uploaded.size)
+        assertEquals(1, geminiClient.lastAttachmentCount)
+
+        val stored = messageStore.get("1")!!
+        assertEquals(1, stored.attachments.size)
+        assertEquals("slip.pdf", stored.attachments[0].filename)
+
+        val viewBody = client.get("/inbox/messages/1").bodyAsText()
+        assertTrue(viewBody.contains("slip.pdf"))
+        assertTrue(viewBody.contains("/inbox/messages/1/attachments/0"))
+
+        val downloadResponse = client.get("/inbox/messages/1/attachments/0")
+        assertEquals(HttpStatusCode.OK, downloadResponse.status)
+        assertContentEquals(attachmentBytes, downloadResponse.body())
+    }
+
+    // ATTACHMENTS_BUCKET not configured on this deployment - attachments are
+    // dropped at pull time (never uploaded, never stored) rather than
+    // failing the pull, same "additive, not a hard gate" nullability as
+    // calendarClient.
+    @Test
+    fun testMessageAttachmentsAreDroppedWhenAttachmentStoreIsNotConfigured() = testApplication {
+        val gmailClient = FakeGmailClient(
+            listOf(
+                GmailMessage(
+                    id = "1",
+                    subject = "Field trip permission slip",
+                    from = "Ms. Rivera <teacher@school.example>",
+                    date = "Mon, 1 Sep 2026 10:00:00 -0400",
+                    receivedAt = Instant.parse("2026-09-01T14:00:00Z"),
+                    bodyText = "See the attached form.",
+                    attachments = listOf(EmailAttachment("slip.pdf", "application/pdf", byteArrayOf(1, 2, 3)))
+                )
+            )
+        )
+        val geminiClient = FakeGeminiClient()
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        testModule(
+            userStore = userStore, gmailClient = gmailClient, geminiClient = geminiClient,
+            messageStore = messageStore, attachmentStore = null
+        )
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        assertEquals(emptyList(), messageStore.get("1")!!.attachments)
+        assertEquals(0, geminiClient.lastAttachmentCount)
     }
 }

@@ -164,7 +164,7 @@ class ImportPhotoTest {
     @Test
     fun testExtractionFailureReturnsAFriendlyErrorInsteadOfCrashing() = testApplication {
         val geminiClient = object : GeminiClient {
-            override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction =
+            override suspend fun extract(subject: String, from: String, bodyText: String, attachments: List<ExtractionAttachment>): EmailExtraction =
                 error("not used")
 
             override suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent> =

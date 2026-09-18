@@ -27,6 +27,16 @@ data class ExtractedActionItem(val title: String, val description: String, val d
 
 data class EmailExtraction(val summary: String, val actionItems: List<ExtractedActionItem>)
 
+// One email attachment worth handing to Gemini alongside the body text -
+// InboxProcessingSweep.kt only ever builds these for image/PDF attachments
+// (the ones Gemini can read via inlineData, same restriction
+// extractCalendarEventsFromImage already has), fetching the bytes back from
+// Cloud Storage via AttachmentRepository since EmailMessage.attachments only
+// carries metadata (see MessageStore.kt's StoredAttachment). Plain class, not
+// a data class - same "don't want a ByteArray-based equals/hashCode or a
+// byte-dumping toString" reasoning as GmailClient.kt's EmailAttachment.
+class ExtractionAttachment(val bytes: ByteArray, val mimeType: String)
+
 // Gemini's raw output for one event read off an uploaded calendar (a photo of
 // a physical wall/paper calendar, a printed school schedule, a whiteboard, a
 // PDF, or a Word document) - the photo-import counterpart of
@@ -41,7 +51,11 @@ data class EmailExtraction(val summary: String, val actionItems: List<ExtractedA
 data class ExtractedCalendarEvent(val title: String, val date: String, val time: String? = null, val description: String? = null)
 
 interface GeminiClient {
-    suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction
+    // attachments defaults to empty so extract()'s existing text-only call
+    // shape still compiles everywhere it's already used (tests included) -
+    // only InboxProcessingSweep.kt's real pull path ever passes anything
+    // here.
+    suspend fun extract(subject: String, from: String, bodyText: String, attachments: List<ExtractionAttachment> = emptyList()): EmailExtraction
     suspend fun extractCalendarEventsFromImage(imageBytes: ByteArray, mimeType: String): List<ExtractedCalendarEvent>
     suspend fun extractCalendarEventsFromText(documentText: String): List<ExtractedCalendarEvent>
 }
@@ -146,7 +160,18 @@ class RestGeminiClient(
     // model if this starts 404ing).
     private val model: String = System.getenv("GEMINI_MODEL") ?: "gemini-3.6-flash"
 ) : GeminiClient {
-    override suspend fun extract(subject: String, from: String, bodyText: String): EmailExtraction {
+    override suspend fun extract(subject: String, from: String, bodyText: String, attachments: List<ExtractionAttachment>): EmailExtraction {
+        // Same "sometimes the real content is in the attachment, not the
+        // body" reasoning that gave photo-import its own extraction path -
+        // a school email frequently just says "see attached" with the actual
+        // permission slip/date/form as a PDF or image. Only mentioned when
+        // there's actually at least one (an inlineData part with nothing to
+        // say about it would just be noise for the common no-attachment
+        // case).
+        val attachmentNote = if (attachments.isNotEmpty()) {
+            "\n\nThis email has ${attachments.size} attachment(s) included below as image/PDF data - " +
+                "read them too, since the actual form/date/details are sometimes only in the attachment."
+        } else ""
         val prompt = """
             You are helping a parent keep track of school-related email. Read the email below and:
             1. Write a one-to-two sentence summary of what it's about.
@@ -160,15 +185,17 @@ class RestGeminiClient(
             From: $from
             Subject: $subject
             Body:
-            $bodyText
+            $bodyText$attachmentNote
         """.trimIndent()
 
+        val parts = listOf(GeminiPart(prompt)) +
+            attachments.map { GeminiPart(inlineData = GeminiInlineData(it.mimeType, Base64.getEncoder().encodeToString(it.bytes))) }
         val response = httpClient.post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent") {
             parameter("key", apiKey)
             contentType(ContentType.Application.Json)
             setBody(
                 GenerateContentRequest(
-                    contents = listOf(GeminiContent(listOf(GeminiPart(prompt)))),
+                    contents = listOf(GeminiContent(parts)),
                     generationConfig = GeminiGenerationConfig(responseSchema = extractionSchema)
                 )
             )

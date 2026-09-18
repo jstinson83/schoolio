@@ -8,11 +8,18 @@ package com.schoolio
 suspend fun processPendingMessages(
     messageStore: MessageRepository,
     actionItemStore: ActionItemRepository,
-    geminiClient: GeminiClient
+    geminiClient: GeminiClient,
+    // Null when ATTACHMENTS_BUCKET isn't set on this deployment (see
+    // Application.kt) - same "additive, not a hard gate" nullability as
+    // calendarClient. A message's attachments (if any) are just skipped for
+    // extraction in that case; the email body alone still gets processed as
+    // before.
+    attachmentStore: AttachmentRepository?
 ) {
     for (message in messageStore.getPending()) {
         try {
-            val extraction = geminiClient.extract(message.subject, message.from, message.bodyText)
+            val attachments = message.attachmentsForExtraction(attachmentStore)
+            val extraction = geminiClient.extract(message.subject, message.from, message.bodyText, attachments)
             actionItemStore.addAll(extraction.actionItems.map { it.toActionItem(message.id) })
             messageStore.markProcessed(message.id, extraction.summary)
         } catch (e: Exception) {
@@ -24,6 +31,21 @@ suspend fun processPendingMessages(
             messageStore.markFailed(message.id, e.message ?: "Unknown error")
         }
     }
+}
+
+// Only image/PDF attachments are worth fetching back from Cloud Storage -
+// Gemini's inlineData mechanism doesn't accept a docx/Word attachment any
+// more than the photo-import path's extractCalendarEventsFromImage does (see
+// GeminiClient.kt), and there's no extractCalendarEventsFromText-style
+// local-text-extraction step wired up for a plain email's attachments. A
+// download() that comes back null (e.g. the object was deleted out from
+// under Firestore's own record) is dropped rather than failing the whole
+// extraction.
+private suspend fun EmailMessage.attachmentsForExtraction(attachmentStore: AttachmentRepository?): List<ExtractionAttachment> {
+    if (attachmentStore == null) return emptyList()
+    return attachments
+        .filter { it.contentType.startsWith("image/") || it.contentType == "application/pdf" }
+        .mapNotNull { stored -> attachmentStore.download(stored.storagePath)?.let { ExtractionAttachment(it, stored.contentType) } }
 }
 
 // dueDate/dueTime stay separate through extraction (see ExtractedActionItem's

@@ -105,6 +105,42 @@ class GeminiClientTest {
     }
 
     @Test
+    fun testExtractSendsAttachmentsAsAdditionalInlineDataParts() = runBlocking {
+        // An email attachment (see InboxProcessingSweep.kt's
+        // attachmentsForExtraction) rides alongside the prompt text in the
+        // same request, same shape extractCalendarEventsFromImage already
+        // uses for a photo - just potentially more than one inlineData part
+        // in this case.
+        var sawPartCount: Int? = null
+        var sawInlineDataMimeTypes: List<String>? = null
+        val httpClient = mockClient { request ->
+            val bodyText = String((request.body as OutgoingContent.ByteArrayContent).bytes())
+            val requestJson = Json.parseToJsonElement(bodyText).jsonObject
+            val parts = requestJson["contents"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray
+            sawPartCount = parts.size
+            sawInlineDataMimeTypes = parts.filter { it.jsonObject.containsKey("inlineData") }
+                .map { it.jsonObject["inlineData"]!!.jsonObject["mimeType"]!!.jsonPrimitive.content }
+            respond(
+                """{"candidates": [{"content": {"parts": [{"text": "{\"summary\":\"Permission slip.\",\"actionItems\":[]}"}]}}]}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            )
+        }
+
+        RestGeminiClient(httpClient, apiKey = "fake-api-key").extract(
+            "Field trip permission slip", "teacher@school.example", "See attached.",
+            listOf(
+                ExtractionAttachment(byteArrayOf(1, 2, 3), "application/pdf"),
+                ExtractionAttachment(byteArrayOf(4, 5, 6), "image/jpeg")
+            )
+        )
+
+        // One text part (the prompt) plus one inlineData part per attachment.
+        assertEquals(3, sawPartCount)
+        assertEquals(listOf("application/pdf", "image/jpeg"), sawInlineDataMimeTypes)
+    }
+
+    @Test
     fun testExtractCalendarEventsFromImageSendsInlineDataAndParsesEvents() = runBlocking {
         var sawInlineDataMimeType: String? = null
         var sawInlineDataBase64: String? = null
