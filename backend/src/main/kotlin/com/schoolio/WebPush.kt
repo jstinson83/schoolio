@@ -130,21 +130,21 @@ class LibraryWebPushSender(
                 .payload(payload)
                 .ttl(Duration.ofHours(24).seconds.toInt())
                 .build()
-            // A prior diagnostic pass confirmed the aes128gcm request this
-            // library builds is exactly correct per RFC 8291/8292 - right
-            // Content-Encoding, an Authorization "k=" that exactly matches
-            // the configured VAPID_PUBLIC_KEY at the expected length - and
-            // FCM still 403ed with "crypto-key header had invalid format...
-            // p256ecdsa=base64(...)". That's the literal shape of the
-            // *older* aesgcm encoding's Crypto-Key header, so rather than
-            // keep assuming that wording is just stale, this takes it at
-            // face value and sends aesgcm explicitly instead of the
-            // library's aes128gcm default - the library supports both
-            // (Encoding.AESGCM/AES128GCM), and this is the cheapest way to
-            // find out whether FCM genuinely wants the older shape here.
-            logger.info(
-                "Daily digest diagnostic: sending with Encoding.AESGCM instead of the default AES128GCM (see WebPush.kt's send() comment)"
-            )
+            // AES128GCM (byte-verified correct - see the removed diagnostic
+            // in an earlier commit) and AESGCM both got the identical FCM
+            // 403 text, which means the header shape isn't actually the
+            // problem (switching it should have changed something if it
+            // were). That result also means the switch to AESGCM itself
+            // needs verifying, not assumed - logging every header this
+            // encoding actually produces, unredacted except the JWT/key
+            // material isn't secret here (it's already sent to FCM in the
+            // clear over TLS) so there's nothing to gain by hiding it from
+            // our own logs while debugging this.
+            runCatching {
+                val diagnosticRequest = pushService.preparePost(notification, Encoding.AESGCM)
+                val headerDump = diagnosticRequest.allHeaders.joinToString("; ") { "${it.name}=${it.value}" }
+                logger.info("Daily digest diagnostic: AESGCM request headers: {}", headerDump)
+            }.onFailure { logger.warn("Daily digest diagnostic: failed to build inspection request", it) }
             val response = pushService.send(notification, Encoding.AESGCM)
             when (val status = response.statusLine.statusCode) {
                 200, 201, 202 -> PushSendResult.Sent
