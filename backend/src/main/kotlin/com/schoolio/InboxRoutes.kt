@@ -305,7 +305,7 @@ fun Route.inboxRoutes(
         val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
         val (pastActionItems, upcomingActionItems) = allActionItems
             .filterNot { it.dismissed }
-            .partition { it.isPastDue(today) }
+            .partition { it.isPastDue(today, messagesById[it.sourceMessageId]) }
         val processedWithNoActionItems = messages.filter {
             it.status == MessageStatus.PROCESSED && !it.dismissed && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
         }
@@ -992,15 +992,20 @@ private fun ActionItem.dateKeyAndTime(message: EmailMessage?): Pair<String, Stri
 // events" vs. the upcoming date-groups above it - the maintainer's ask for a
 // third section between the two that already existed, for items whose known
 // due date has already gone by and are "likely to be dismissed... soon"
-// rather than something to still act on. Only items with an actual dueDate
-// from Gemini can be "past" - an item with no date at all falls back to its
-// message's sent date for grouping (see dateKeyAndTime above), which says
-// nothing about whether it's still actionable, so those stay in the
-// upcoming section unchanged.
-private fun ActionItem.isPastDue(today: String): Boolean {
-    val raw = date ?: return false
-    if (raw.length < 10) return false
-    return raw.take(10) < today
+// rather than something to still act on. Uses the same dateKey
+// dateKeyAndTime resolves for display grouping (an actual Gemini dueDate
+// when there is one, otherwise the source message's received date) rather
+// than just the raw dueDate - a previous version of this only looked at the
+// raw dueDate, which meant an old, undismissed item with no extracted date
+// stayed in the upcoming section forever, grouped under its own
+// obviously-past date heading (its received-date fallback) instead of
+// moving to Past events like everything else that's gone stale. An item
+// with no date and no resolvable message ("unknown-date") has nothing to
+// compare, so it's never past due.
+private fun ActionItem.isPastDue(today: String, message: EmailMessage?): Boolean {
+    val (dateKey, _) = dateKeyAndTime(message)
+    if (dateKey == "unknown-date") return false
+    return dateKey < today
 }
 
 private fun formatGroupHeading(dateKey: String): String =

@@ -643,16 +643,20 @@ up in its own "Other updates" section on `GET /inbox/dismissed` instead
 **`/inbox`'s main content is three sections (decided):** non-dismissed
 action items grouped by due date (`dateGroups`, unchanged/original
 behavior, chronological), then a flat **"Past events"** section
-(`pastActionItems`) for items whose known due date has already gone by,
-then "Other updates" (processed messages with no action items at all,
-unchanged). Only an item with an actual Gemini-extracted `dueDate` can land
-in Past events (`InboxRoutes.kt`'s `isPastDue`, comparing against
-`LocalDate.now(UTC)`) — an item with no date at all falls back to its
-source message's sent date purely for the *upcoming* section's date-heading
-grouping (see `dateKeyAndTime`), which says nothing about whether it's
-still actionable, so those stay in the upcoming section rather than being
-swept into Past events. Every item in both sections has a "Dismiss" button
-posting to `POST /inbox/action-items/{id}/dismiss`.
+(`pastActionItems`) for items whose date has already gone by, then "Other
+updates" (processed messages with no action items at all, unchanged). Past
+vs. upcoming (`InboxRoutes.kt`'s `isPastDue`, comparing against
+`LocalDate.now(HOUSEHOLD_ZONE)`) uses the same dateKey the upcoming
+section's own date-heading grouping does (`dateKeyAndTime`) — an actual
+Gemini-extracted `dueDate` when there is one, otherwise the source
+message's received date as a fallback. An earlier version only checked the
+raw `dueDate` and deliberately left dateless items out of the Past-events
+sweep, reasoning that a missing date "says nothing about whether it's still
+actionable" — in practice that meant an old, undismissed dateless item
+stayed in the upcoming section forever, grouped under its own
+obviously-past date heading (a past event rendered in the "upcoming"
+section — reported as a bug and fixed). Every item in both sections has a
+"Dismiss" button posting to `POST /inbox/action-items/{id}/dismiss`.
 
 **Rescanning is watermark-based, not a rolling lookback window every time**
 (`ScanStateStore.kt`). Per-sender, not one global value — keyed on `sender`

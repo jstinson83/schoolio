@@ -633,6 +633,53 @@ class InboxTest {
         assertFalse(pastEventsSection.contains("Upcoming field trip"))
     }
 
+    // An action item with no Gemini-extracted due date falls back to its
+    // source message's received date purely for date-heading grouping (see
+    // InboxRoutes.kt's dateKeyAndTime) - previously isPastDue only looked at
+    // the raw (null) dueDate, so an old, undismissed item like this never
+    // moved to Past events no matter how stale its underlying email was. It
+    // stayed in the main list forever, grouped under its own obviously-past
+    // date heading - i.e. a past event rendered in the "upcoming" section.
+    // isPastDue now resolves the same dateKey buildDateGroups uses for
+    // display, so this item is swept into Past events like any other stale
+    // one once its fallback date has gone by.
+    @Test
+    fun testDatelessActionItemsFromOldMessagesAppearInPastEventsNotUpcoming() = testApplication {
+        val userStore = FakeUserRepository()
+        val messageStore = FakeMessageRepository()
+        val actionItemStore = FakeActionItemRepository()
+        messageStore.storeIfAbsent(
+            EmailMessage(
+                id = "msg-old",
+                subject = "Reminder about lunch accounts",
+                from = "school@example.com",
+                date = "Wed, 1 Jan 2020 10:00:00 -0400",
+                receivedAt = Instant.parse("2020-01-01T14:00:00Z"),
+                bodyText = "Please keep your account funded.",
+                status = MessageStatus.PROCESSED,
+                summary = "Reminder to keep lunch accounts funded."
+            )
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "msg-old", title = "Fund lunch account", description = "No specific deadline given")
+        )
+        actionItemStore.items.add(
+            ActionItem(sourceMessageId = "none", title = "Upcoming field trip", description = "Pack a lunch", date = "2099-01-01")
+        )
+        testModule(userStore = userStore, gmailClient = FakeGmailClient(emptyList()), messageStore = messageStore, actionItemStore = actionItemStore)
+        val client = signInFakeUserWithGmailConnected(userStore)
+        client.get("/inbox")
+        client.awaitInboxSettled()
+
+        val body = client.get("/inbox").bodyAsText()
+        assertTrue(body.contains("Past events"))
+        val beforePastEvents = body.substringBefore("class=\"past-events\"")
+        val pastEventsSection = body.substringAfter("class=\"past-events\"").substringBefore("</section>")
+        assertFalse(beforePastEvents.contains("Fund lunch account"), "Dateless item from a years-old email shouldn't be in the upcoming section")
+        assertTrue(beforePastEvents.contains("Upcoming field trip"))
+        assertTrue(pastEventsSection.contains("Fund lunch account"))
+    }
+
     // ActionItemRepository.getAll() (real Firestore, not the fake below) has
     // no orderBy - without an explicit sort in buildDateGroups/
     // buildFlatActionItemViews, two near-duplicate items (e.g. the same
