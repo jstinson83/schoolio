@@ -14,6 +14,7 @@
     --font-heading: 'Bitter', Georgia, serif;
     --font-body: 'Karla', system-ui, -apple-system, sans-serif;
     --font-mono: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+    --nav-footer-height: 4rem;
 }
 
 body {
@@ -250,6 +251,58 @@ h1, h2, h3 {
         padding-top: 0.4rem;
         padding-bottom: 0.9rem;
         border-top-color: rgba(255, 255, 255, 0.12);
+    }
+}
+
+/* ---- Mobile footer tab bar: the two primary destinations (What's going
+   on / Updates) so they're reachable without opening the hamburger menu,
+   which now only holds Settings/Dismissed/Sign out (see .app-nav-menu
+   above and nav.ftl). Hidden above 640px, where .app-nav-links already
+   covers the same destinations inline in the top bar. ---- */
+.app-nav-footer {
+    display: none;
+}
+
+@media (max-width: 640px) {
+    .app-nav-footer {
+        display: flex;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 20;
+        background: var(--nav-bg);
+        border-top: 3px solid var(--accent);
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .app-nav-footer-link {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.25rem;
+        height: var(--nav-footer-height);
+        color: var(--nav-text);
+        opacity: 0.7;
+        text-decoration: none;
+    }
+
+    .app-nav-footer-link.active {
+        color: #ffffff;
+        opacity: 1;
+    }
+
+    .app-nav-footer-icon {
+        width: 1.35rem;
+        height: 1.35rem;
+    }
+
+    .app-nav-footer-label {
+        font-family: var(--font-body);
+        font-size: 0.7rem;
+        font-weight: 700;
     }
 }
 
@@ -921,4 +974,25 @@ h1, h2, h3 {
 
 #fabButton[aria-expanded="true"] #fabIcon {
     transform: rotate(45deg);
+}
+
+/* Clearance for the fixed footer tab bar (.app-nav-footer above) - kept
+   down here, after .inbox/.settings/.inbox-photo-import/.fab-container's
+   own unconditional rules, so these mobile-only overrides actually win the
+   cascade at equal specificity instead of being clobbered by whichever of
+   those rules happens to come later in the file. */
+@media (max-width: 640px) {
+    .inbox, .settings {
+        padding-bottom: calc(var(--nav-footer-height) + env(safe-area-inset-bottom) + 1rem);
+    }
+
+    .inbox-photo-import {
+        padding-bottom: calc(var(--nav-footer-height) + env(safe-area-inset-bottom) + 6rem);
+    }
+
+    /* Lift the photo-import FAB above the footer tab bar instead of
+       overlapping it. */
+    .fab-container {
+        bottom: calc(var(--nav-footer-height) + env(safe-area-inset-bottom) + 0.85rem);
+    }
 }
