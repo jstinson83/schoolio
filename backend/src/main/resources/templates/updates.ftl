@@ -18,7 +18,6 @@
 
         <#if noActionMessages?size gt 0>
             <section class="other-updates">
-                <h2>Other updates</h2>
                 <ul class="message-list">
                     <#list noActionMessages as message>
                         <li class="message">
