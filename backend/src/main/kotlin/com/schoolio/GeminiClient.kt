@@ -173,14 +173,26 @@ class RestGeminiClient(
                 "read them too, since the actual form/date/details are sometimes only in the attachment."
         } else ""
         val prompt = """
-            You are helping a parent keep track of school-related email. Read the email below and:
-            1. Write a one-to-two sentence summary of what it's about.
-            2. List any action items the parent needs to do (permission slips to sign, forms to
-               return, events to attend, deadlines to meet). For each one, give a short title (a
-               few words, e.g. "Sign permission slip") and a fuller description of what's needed.
-               If the email states a date and/or time for an item, include it (dueDate as
-               YYYY-MM-DD, dueTime as 24-hour HH:MM); omit whichever one isn't stated. If there's
-               nothing actionable, return an empty list.
+            You are helping a parent keep track of school-related email. Every email you see here
+            already passed through a curated sender filter, so it's already been judged worth the
+            parent's attention - the parent relies on your summary instead of opening the original,
+            so it needs to actually stand in for the email. Read the email below and:
+            1. Write a one-to-two sentence summary that captures the real content: specific names,
+               dates, times, locations, amounts, or links it mentions, not just the general topic
+               (prefer "Picture day is Oct 3; basic package is $12" over "This is about picture
+               day"). Always write a real, specific summary - even a purely informational email
+               with no action item (a newsletter, a closure notice, a schedule change, an FYI) still
+               needs one. Never leave it blank, and never write a generic placeholder just because
+               step 2 below turns up nothing.
+            2. List any action items the parent needs to do or decide on: permission slips to sign,
+               forms or money to send in, events to attend or RSVP to, deadlines to meet, supplies
+               to provide, or schedule changes that affect pickup/drop-off. For each one, give a
+               short title (a few words, e.g. "Sign permission slip") and a fuller description of
+               what's needed. If the email states a date and/or time for an item, include it
+               (dueDate as YYYY-MM-DD, dueTime as 24-hour HH:MM); omit whichever one isn't stated.
+               If there's genuinely nothing the parent needs to do, return an empty list - the
+               summary from step 1 is what carries the email's content in that case, so it must not
+               be empty too.
 
             From: $from
             Subject: $subject

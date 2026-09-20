@@ -194,7 +194,7 @@ class InboxTest {
         client.get("/inbox")
         awaitMessageStatus(messageStore, "1", MessageStatus.FAILED)
 
-        val body = client.get("/inbox").bodyAsText()
+        val body = client.get("/inbox/updates").bodyAsText()
         assertTrue(body.contains("Field trip form"))
         assertTrue(body.contains("Couldn't process this message"))
         assertTrue(body.contains("Gemini is down"))
@@ -866,21 +866,21 @@ class InboxTest {
         client.get("/inbox")
         client.awaitInboxSettled()
 
-        assertTrue(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertTrue(client.get("/inbox/updates").bodyAsText().contains("School newsletter"))
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
 
         val dismissResponse = client.submitForm(url = "/inbox/messages/msg-1/dismiss", formParameters = Parameters.build {})
         assertEquals(HttpStatusCode.Found, dismissResponse.status)
-        assertEquals("/inbox", dismissResponse.headers[HttpHeaders.Location])
+        assertEquals("/inbox/updates", dismissResponse.headers[HttpHeaders.Location])
 
-        assertFalse(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertFalse(client.get("/inbox/updates").bodyAsText().contains("School newsletter"))
         assertTrue(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
 
         val restoreResponse = client.submitForm(url = "/inbox/messages/msg-1/restore", formParameters = Parameters.build {})
         assertEquals(HttpStatusCode.Found, restoreResponse.status)
         assertEquals("/inbox/dismissed", restoreResponse.headers[HttpHeaders.Location])
 
-        assertTrue(client.get("/inbox").bodyAsText().contains("School newsletter"))
+        assertTrue(client.get("/inbox/updates").bodyAsText().contains("School newsletter"))
         assertFalse(client.get("/inbox/dismissed").bodyAsText().contains("School newsletter"))
     }
 
@@ -926,7 +926,7 @@ class InboxTest {
         client.get("/inbox")
         client.awaitInboxSettled()
 
-        val body = client.get("/inbox").bodyAsText()
+        val body = client.get("/inbox/updates").bodyAsText()
         assertTrue(body.contains("/inbox/messages/msg-mine"))
         assertTrue(body.contains("/inbox/messages/msg-spouse"))
 
@@ -965,7 +965,7 @@ class InboxTest {
         client.get("/inbox")
         client.awaitInboxSettled()
 
-        val body = client.get("/inbox").bodyAsText()
+        val body = client.get("/inbox/updates").bodyAsText()
         val encodedId = java.net.URLEncoder.encode(rawId, "UTF-8")
         assertTrue(body.contains("/inbox/messages/$encodedId"))
         assertFalse(body.contains("/inbox/messages/$rawId\""))
@@ -983,6 +983,17 @@ class InboxTest {
         val client = signInFakeUser()
 
         assertTrue(client.get("/inbox").bodyAsText().contains("href=\"/inbox/dismissed\""))
+    }
+
+    // Updates gets a full nav entry (not nav-link-subtle like Dismissed) -
+    // see nav.ftl/InboxRoutes.kt's GET /inbox/updates doc comment on why this
+    // one is prominent.
+    @Test
+    fun testNavIncludesALinkToTheUpdatesPage() = testApplication {
+        testModule()
+        val client = signInFakeUser()
+
+        assertTrue(client.get("/inbox").bodyAsText().contains("href=\"/inbox/updates\""))
     }
 
     // End-to-end: a pulled message's attachment gets uploaded to Cloud

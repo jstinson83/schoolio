@@ -3,6 +3,7 @@
         <a class="app-nav-brand" href="/inbox">Schoolio</a>
         <nav class="app-nav-links">
             <a class="nav-link<#if (activeNav!"") == "inbox"> active</#if>" href="/inbox">Inbox</a>
+            <a class="nav-link<#if (activeNav!"") == "updates"> active</#if>" href="/inbox/updates">Updates</a>
             <a class="nav-link<#if (activeNav!"") == "settings"> active</#if>" href="/inbox/settings">Settings</a>
             <a class="nav-link nav-link-subtle<#if (activeNav!"") == "dismissed"> active</#if>" href="/inbox/dismissed">Dismissed</a>
         </nav>
@@ -15,6 +16,7 @@
     </div>
     <div class="app-nav-menu" id="navMenu" hidden>
         <a class="nav-link<#if (activeNav!"") == "inbox"> active</#if>" href="/inbox">Inbox</a>
+        <a class="nav-link<#if (activeNav!"") == "updates"> active</#if>" href="/inbox/updates">Updates</a>
         <a class="nav-link<#if (activeNav!"") == "settings"> active</#if>" href="/inbox/settings">Settings</a>
         <a class="nav-link nav-link-subtle<#if (activeNav!"") == "dismissed"> active</#if>" href="/inbox/dismissed">Dismissed</a>
         <form method="post" action="/logout">
