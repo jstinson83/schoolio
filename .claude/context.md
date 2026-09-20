@@ -565,7 +565,18 @@ as of the sync rework below, *both* phases run in the background:
   still-`PENDING` message, writes its `actionItems` (see below) and marks
   the message `PROCESSED` (with Gemini's summary) or `FAILED` (with a
   reason) — never left silently `PENDING` forever on an error, and never
-  silently dropped either.
+  silently dropped either. Every message that clears `schoolSenders`
+  therefore always lands somewhere visible: an action item, an "Other
+  updates" entry, or a "Couldn't process" one (`GET /inbox/updates` — see
+  "Updates gets its own page" below) — there's no code path that pulls a
+  message and then shows nothing for it. When that still felt like it was
+  happening in practice, the actual gap was `GeminiClient.kt`'s `extract()`
+  prompt letting the summary come back thin/generic for a purely
+  informational email (nothing wrong structurally, just not worth reading in
+  the "Other updates" list) — the prompt now explicitly requires a specific,
+  non-empty summary (names/dates/amounts/links, not just the general topic)
+  independently of whether any action item was found, rather than treating
+  the summary as an afterthought to the action-item extraction.
 - **`GET /inbox/status`** — polled by `inbox.ftl`'s banner (`app.js`) while
   a pull is syncing or any message is `PENDING` at page load, so new
   mail/finished processing that happens after the page rendered shows up
@@ -634,21 +645,21 @@ needed their own `dismissed` flag rather than reusing `ActionItem`'s —
 `EmailMessage.dismissed` plus `MessageRepository.dismiss`/`restore`, same
 single-field-Firestore-update shape as the action item version. Routes are
 the message equivalent of the action item ones: `POST
-/inbox/messages/{id}/dismiss` and `POST /inbox/messages/{id}/restore`. A
-dismissed message drops out of `/inbox`'s "Other updates" section and shows
-up in its own "Other updates" section on `GET /inbox/dismissed` instead
-(alongside dismissed action items' date groups), each with the same
+/inbox/messages/{id}/dismiss` (redirects to `GET /inbox/updates`, the page
+it's only ever posted from — see "Updates gets its own page" below) and
+`POST /inbox/messages/{id}/restore` (redirects to `GET /inbox/dismissed`). A
+dismissed message drops out of `/inbox/updates`'s "Other updates" section and
+shows up in its own "Other updates" section on `GET /inbox/dismissed`
+instead (alongside dismissed action items' date groups), each with the same
 "Restore" button.
 
-**`/inbox`'s main content is three sections (decided):** non-dismissed
-action items grouped by due date (`dateGroups`, unchanged/original
-behavior, chronological), then a flat **"Past events"** section
-(`pastActionItems`) for items whose date has already gone by, then "Other
-updates" (processed messages with no action items at all, unchanged). Past
-vs. upcoming (`InboxRoutes.kt`'s `isPastDue`, comparing against
-`LocalDate.now(HOUSEHOLD_ZONE)`) uses the same dateKey the upcoming
-section's own date-heading grouping does (`dateKeyAndTime`) — an actual
-Gemini-extracted `dueDate` when there is one, otherwise the source
+**`/inbox`'s main content is action items only (decided):** non-dismissed
+action items grouped by due date (`dateGroups`, chronological), then a flat
+**"Past events"** section (`pastActionItems`) for items whose date has
+already gone by. Past vs. upcoming (`InboxRoutes.kt`'s `isPastDue`,
+comparing against `LocalDate.now(HOUSEHOLD_ZONE)`) uses the same dateKey the
+upcoming section's own date-heading grouping does (`dateKeyAndTime`) — an
+actual Gemini-extracted `dueDate` when there is one, otherwise the source
 message's received date as a fallback. An earlier version only checked the
 raw `dueDate` and deliberately left dateless items out of the Past-events
 sweep, reasoning that a missing date "says nothing about whether it's still
@@ -657,6 +668,21 @@ stayed in the upcoming section forever, grouped under its own
 obviously-past date heading (a past event rendered in the "upcoming"
 section — reported as a bug and fixed). Every item in both sections has a
 "Dismiss" button posting to `POST /inbox/action-items/{id}/dismiss`.
+
+**Updates gets its own page instead of living at the bottom of `/inbox`
+(decided).** Originally "Other updates" (processed messages with no action
+items) and "Couldn't process" (failed messages) were the last two sections
+on `/inbox`, below the action-item groups — easy to miss, and conceptually
+not "what's going on" (the page's own heading) since neither is an action
+item. Maintainer feedback: every email that clears the sender filter
+(`ScanSettings.schoolSenders`) should be easy to find somewhere in the app,
+not buried at the bottom of a page named for something else. Moved both
+sections to their own `GET /inbox/updates` (`updates.ftl`), with a full
+(non-subtle) `nav.ftl` entry alongside Inbox/Settings — unlike `Dismissed`,
+this isn't a rarely-visited review list, it's where an "FYI, nothing to do"
+email actually lives. `/inbox` itself keeps its "Inbox" nav label and
+"What's going on" heading unchanged (just the two moved-out sections gone) —
+only a new nav entry was added, not a rename.
 
 **Rescanning is watermark-based, not a rolling lookback window every time**
 (`ScanStateStore.kt`). Per-sender, not one global value — keyed on `sender`

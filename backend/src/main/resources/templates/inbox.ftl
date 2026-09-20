@@ -126,41 +126,8 @@
                 </section>
             </#if>
 
-            <#if noActionMessages?size gt 0>
-                <section class="other-updates">
-                    <h2>Other updates</h2>
-                    <ul class="message-list">
-                        <#list noActionMessages as message>
-                            <li class="message">
-                                <div class="message-subject">${message.subject}</div>
-                                <#if message.summary?has_content><p class="message-summary">${message.summary}</p></#if>
-                                <p class="message-summary"><a href="/inbox/messages/${message.id?url('UTF-8')}">View email</a></p>
-                                <form method="post" action="/inbox/messages/${message.id?url('UTF-8')}/dismiss" class="dismiss-form">
-                                    <button type="submit" class="btn-dismiss">Dismiss</button>
-                                </form>
-                            </li>
-                        </#list>
-                    </ul>
-                </section>
-            </#if>
-
-            <#if failedMessages?size gt 0>
-                <section class="failed-messages">
-                    <h2>Couldn't process</h2>
-                    <ul class="message-list">
-                        <#list failedMessages as message>
-                            <li class="message">
-                                <div class="message-subject">${message.subject}</div>
-                                <p class="message-failed">Couldn't process this message<#if message.reason?has_content>: ${message.reason}</#if></p>
-                                <#if message.id?has_content><p class="message-summary"><a href="/inbox/messages/${message.id?url('UTF-8')}">View email</a></p></#if>
-                            </li>
-                        </#list>
-                    </ul>
-                </section>
-            </#if>
-
-            <#if !syncing && !todayGroup?? && upcomingGroups?size == 0 && pastActionItems?size == 0 && noActionMessages?size == 0 && failedMessages?size == 0 && pendingCount == 0>
-                <p>No messages found.</p>
+            <#if !syncing && !todayGroup?? && upcomingGroups?size == 0 && pastActionItems?size == 0 && pendingCount == 0>
+                <p>No messages found. Check the <a href="/inbox/updates">Updates</a> page for anything pulled in with nothing to act on.</p>
             </#if>
         </#if>
     </main>

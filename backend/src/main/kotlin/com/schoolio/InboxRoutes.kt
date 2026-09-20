@@ -301,15 +301,10 @@ fun Route.inboxRoutes(
         val messages = messageStore.getAll()
         val messagesById = messages.associateBy { it.id }
         val allActionItems = actionItemStore.getAll()
-        val actionItemsByMessage = allActionItems.groupBy { it.sourceMessageId }
         val today = LocalDate.now(HOUSEHOLD_ZONE).toString()
         val (pastActionItems, upcomingActionItems) = allActionItems
             .filterNot { it.dismissed }
             .partition { it.isPastDue(today, messagesById[it.sourceMessageId]) }
-        val processedWithNoActionItems = messages.filter {
-            it.status == MessageStatus.PROCESSED && !it.dismissed && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
-        }
-        val failedMessages = messages.filter { it.status == MessageStatus.FAILED }
         val pendingMessages = messages.filter { it.status == MessageStatus.PENDING }
         // Split out today's own group (at most one - see buildDateGroups'
         // isToday) so inbox.ftl can render it as its own "Today" section
@@ -327,14 +322,39 @@ fun Route.inboxRoutes(
                     "upcomingGroups" to upcomingGroups,
                     "pastActionItems" to buildFlatActionItemViews(pastActionItems, messagesById),
                     "pendingMessages" to pendingMessages.map { mapOf("subject" to it.subject) },
-                    "noActionMessages" to processedWithNoActionItems.map {
+                    "pendingCount" to pendingMessages.size
+                ) + navModel + call.currentUserModel()
+            )
+        )
+    }
+
+    // Its own page rather than buried at the bottom of /inbox (as it used to
+    // be) - a PROCESSED message with no action items ("Other updates") or a
+    // FAILED one ("Couldn't process") both still deserve a place a household
+    // member can actually find, just not mixed into the action-item list
+    // that's the point of the main "What's going on" page (see
+    // CLAUDE.md/current.md's nav rework). Has its own nav.ftl entry, same
+    // prominence as Inbox/Settings - unlike Dismissed, this isn't a rarely
+    // -visited review list.
+    get("/inbox/updates") {
+        val messages = messageStore.getAll()
+        val actionItemsByMessage = actionItemStore.getAll().groupBy { it.sourceMessageId }
+        val noActionMessages = messages.filter {
+            it.status == MessageStatus.PROCESSED && !it.dismissed && (actionItemsByMessage[it.id] ?: emptyList()).isEmpty()
+        }
+        val failedMessages = messages.filter { it.status == MessageStatus.FAILED }
+        call.respond(
+            FreeMarkerContent(
+                "updates.ftl",
+                mapOf(
+                    "noActionMessages" to noActionMessages.map {
                         mapOf("id" to it.id, "subject" to it.subject, "summary" to it.summary)
                     },
                     "failedMessages" to failedMessages.map {
                         mapOf("id" to it.id, "subject" to it.subject, "reason" to it.failureReason)
                     },
-                    "pendingCount" to pendingMessages.size
-                ) + navModel + call.currentUserModel()
+                    "activeNav" to "updates"
+                ) + call.currentUserModel()
             )
         )
     }
@@ -399,11 +419,13 @@ fun Route.inboxRoutes(
     }
 
     // Same dismiss/restore shape as action items above, for an "Other
-    // updates" message (see inbox.ftl) that has no ActionItem of its own to
-    // carry the dismissed flag.
+    // updates"/"Couldn't process" message (see updates.ftl) that has no
+    // ActionItem of its own to carry the dismissed flag. Redirects back to
+    // /inbox/updates (not /inbox) since that's the only page this form is
+    // ever posted from.
     post("/inbox/messages/{id}/dismiss") {
         call.parameters["id"]?.let { messageStore.dismiss(it) }
-        call.respondRedirect("/inbox")
+        call.respondRedirect("/inbox/updates")
     }
 
     post("/inbox/messages/{id}/restore") {
