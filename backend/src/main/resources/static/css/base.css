@@ -22,6 +22,15 @@ body {
     font-family: var(--font-body);
     background: var(--page-bg);
     color: var(--text);
+    /* Email-derived text (message bodies, sender addresses, subjects) can
+       contain a long unbroken token - a URL, a long school-district email
+       address - with no space to wrap at. Without this, that one token
+       pushes its container wider than the viewport and the whole page
+       becomes horizontally scrollable on mobile. Set once here since
+       overflow-wrap is inherited, rather than on every text class that
+       happens to render such content (.message-body, .action-title,
+       .action-description, .action-source, .message-subject, ...). */
+    overflow-wrap: break-word;
 }
 
 h1, h2, h3 {
